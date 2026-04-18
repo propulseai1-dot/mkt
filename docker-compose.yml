@@ -1,0 +1,53 @@
+version: '3.8'
+
+services:
+  # GATEWAY : Le point d'entrée Tor + Nginx
+  gateway:
+    build: ./gateway
+    container_name: sg_gateway
+    depends_on:
+      - frontend
+      - api
+    networks:
+      - silk-net
+    ports:
+      - "127.0.0.1:8080:80" # Accessible uniquement sur ton HP Victus pour les tests
+
+  # FRONTEND : L'interface Mix 2011/2026 (React)
+  frontend:
+    build: ./frontend
+    container_name: sg_frontend
+    networks:
+      - silk-net
+    expose:
+      - "3000"
+
+  # API : Le cerveau en Python (FastAPI)
+  api:
+    build: ./api-service
+    container_name: sg_api
+    depends_on:
+      - database
+    environment:
+      - DB_URL=postgresql://user:pass@database:5432/silkgenesis
+    networks:
+      - silk-net
+    expose:
+      - "5000"
+
+  # DATABASE : PostgreSQL (Stockage sécurisé)
+  database:
+    image: postgres:15-alpine
+    container_name: sg_db
+    environment:
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=pass
+      - POSTGRES_DB=silkgenesis
+    volumes:
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - silk-net
+
+networks:
+  silk-net:
+    driver: bridge

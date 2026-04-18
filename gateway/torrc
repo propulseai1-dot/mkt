@@ -1,0 +1,3 @@
+DataDirectory /var/lib/tor
+HiddenServiceDir /var/lib/tor/silkgenesis_service/
+HiddenServicePort 80 frontend:3000
