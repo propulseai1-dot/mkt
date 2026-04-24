@@ -1,3 +1,88 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+/* src/index.css */
+body {
+    margin: 0;
+    padding: 0;
+    background-color: #050505;
+    color: #00ff41;
+    font-family: 'Courier New', monospace;
+    overflow-x: hidden;
+}
+
+.silk-container {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    background: radial-gradient(circle at center, #0a0a0a 0%, #050505 100%);
+}
+
+.matrix-bg {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    opacity: 0.1;
+    z-index: 0;
+}
+
+.login-box {
+    margin-top: 100px;
+    padding: 30px;
+    border: 1px solid #00ff41;
+    background: rgba(0, 20, 0, 0.9);
+    box-shadow: 0 0 20px rgba(0, 255, 65, 0.2);
+    width: 350px;
+    z-index: 1;
+}
+
+.silk-input {
+    width: 100%;
+    background: #000;
+    border: 1px solid #00ff41;
+    color: #00ff41;
+    padding: 10px;
+    margin: 10px 0;
+    box-sizing: border-box;
+}
+
+.silk-button {
+    width: 100%;
+    background: #00ff41;
+    color: #000;
+    border: none;
+    padding: 12px;
+    cursor: pointer;
+    font-weight: bold;
+    text-transform: uppercase;
+    transition: all 0.3s;
+}
+
+.silk-button:hover {
+    background: #008f11;
+    box-shadow: 0 0 15px #00ff41;
+}
+
+.glitch-text {
+    text-shadow: 2px 2px #ff0000, -2px -2px #0000ff;
+    animation: glitch 1s infinite;
+}
+
+@keyframes glitch {
+    0% { transform: translate(0) }
+    20% { transform: translate(-2px, 2px) }
+    40% { transform: translate(-2px, -2px) }
+    60% { transform: translate(2px, 2px) }
+    80% { transform: translate(2px, -2px) }
+    100% { transform: translate(0) }
+}
+
+/* Global fallbacks to keep the top alpha banner visible across pages */
+.alpha-banner-spacer {
+    height: 64px;
+}
+
+.alpha-banner {
+    z-index: 9999;
+}

@@ -1,0 +1,78 @@
+.alpha-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  width: 100%;
+  background: linear-gradient(90deg, #08080f 0%, #0c0a14 45%, #0a0f0a 100%);
+  border-bottom: 2px solid #8a2be2;
+  box-shadow: 0 0 24px rgba(138, 43, 226, 0.6), 0 0 10px rgba(57, 255, 20, 0.25) inset;
+  padding: 12px 20px;
+  width: 100%;
+  z-index: 9999;
+  font-family: 'Courier New', Courier, monospace;
+  backdrop-filter: blur(4px);
+}
+
+.alpha-content {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 20px;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.status-tag {
+  color: #39ff14;
+  font-weight: bold;
+  letter-spacing: 2px;
+  animation: pulse 2s infinite;
+  text-shadow: 0 0 8px rgba(57, 255, 20, 0.9);
+}
+
+.main-text {
+  color: #ffffff;
+  margin: 0;
+  font-size: 0.95rem;
+  text-shadow: 0 0 6px rgba(138, 43, 226, 0.3);
+}
+
+.brand-name {
+  color: #8a2be2;
+  font-weight: bold;
+  text-transform: uppercase;
+}
+
+.slots-tag {
+  background: rgba(57, 255, 20, 0.1);
+  border: 1px solid #39ff14;
+  padding: 4px 10px;
+  border-radius: 4px;
+  color: #39ff14;
+  font-size: 0.85rem;
+  box-shadow: 0 0 10px rgba(57, 255, 20, 0.25);
+}
+
+.count {
+  font-weight: bold;
+}
+
+/* Petit effet de pulsation pour attirer l'oeil */
+@keyframes pulse {
+  0% { opacity: 1; }
+  50% { opacity: 0.6; }
+  100% { opacity: 1; }
+}
+
+@media (max-width: 960px) {
+  .alpha-content {
+    flex-direction: column;
+    gap: 8px;
+    text-align: center;
+  }
+
+  .main-text {
+    font-size: 0.85rem;
+  }
+}
