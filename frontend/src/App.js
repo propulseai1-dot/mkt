@@ -1,17 +1,16 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { 
   ShieldCheck, Star, TrendingUp, TrendingDown, Wallet, Shield, 
   ChevronRight, ChevronDown, Camera, Fingerprint, Terminal,
   Layers, Trash2, CheckCircle, XCircle, Zap, UserPlus, DollarSign, 
   UserMinus, Copy, Gavel, Scale, Home, MessageSquare, PlusCircle, 
   User as UserIcon, Package, ArrowUpCircle, ArrowDownCircle, Lock,
-  Search, Filter, Tag, Unlock, Bell, Volume2, Key, Globe, Archive, Star as StarFilled
+  Search, Filter, Tag, Unlock, Key, Globe
 } from 'lucide-react';
 import Logo from './Silk_logo.png';
 import VendorDashboard from './VendorDashboard';
 import AdminCategories from './AdminCategories';
 import AdminDashboard from './AdminDashboard';
-import CategorySidebarNew from './CategorySidebar';
 import ReleaseFunds from './ReleaseFunds';
 import AboutPage from './AboutPage';
 import CanaryPage from './CanaryPage';
@@ -152,7 +151,7 @@ function DepositModal({ isOpen, onClose, user }) {
   const [copied, setCopied] = React.useState(false);
   const [depositStatus, setDepositStatus] = React.useState(null);
   const [polling, setPolling] = React.useState(false);
-  const [depositAddress, setDepositAddress] = React.useState(user?.xmr_address || '');
+  const [depositAddress, setDepositAddress] = React.useState('');
   const [isRealAddress, setIsRealAddress] = React.useState(false);
   const [loadingAddr, setLoadingAddr] = React.useState(false);
 
@@ -163,13 +162,15 @@ function DepositModal({ isOpen, onClose, user }) {
     fetch(`/api/wallet/deposit-address/${user.username}`)
       .then(r => r.json())
       .then(d => {
-        if (d.address) {
+        if (d.address && d.address.startsWith('8')) {
           setDepositAddress(d.address);
           setIsRealAddress(d.real === true);
+        } else {
+          setDepositAddress('');
         }
       })
       .catch(() => {
-        setDepositAddress(user?.xmr_address || '');
+        setDepositAddress('');
       })
       .finally(() => setLoadingAddr(false));
   }, [isOpen, user]);
@@ -246,7 +247,7 @@ function DepositModal({ isOpen, onClose, user }) {
         <div className="bg-black p-4 rounded-xl border border-white/5 mb-4">
           <p className="text-[10px] text-gray-500 mb-2 uppercase tracking-widest">Your Unique Deposit Address:</p>
           <div className="flex items-start gap-3">
-            <code className="text-[11px] text-amber-500 break-all font-mono flex-1 leading-relaxed">{depositAddress}</code>
+            <code className="text-[11px] text-amber-500 break-all font-mono flex-1 leading-relaxed">{depositAddress || "SUBADDRESS UNAVAILABLE (RPC OFFLINE)"}</code>
             <button onClick={handleCopy}
               className="shrink-0 px-3 py-2 rounded-lg text-xs font-bold transition-all"
               style={{ background: copied ? '#22c55e' : '#374151', color: 'white' }}>
@@ -2313,6 +2314,25 @@ function ProfilePage({ user, balance, xmrRate, onUpdateAvatar, onUpgrade, onDele
   const [tempImg, setTempImg] = useState(user?.avatar || null);
   const [wAddr, setWAddr] = useState('');
   const [wAmt, setWAmt] = useState('');
+  const [profileDepositAddress, setProfileDepositAddress] = useState('');
+
+  useEffect(() => {
+    setProfileDepositAddress('');
+    if (!user?.username) return;
+
+    fetch(`/api/wallet/deposit-address/${user.username}`)
+      .then(r => r.json())
+      .then(d => {
+        if (d?.address && d.address.startsWith('8')) {
+          setProfileDepositAddress(d.address);
+        } else {
+          setProfileDepositAddress('');
+        }
+      })
+      .catch(() => {
+        setProfileDepositAddress('');
+      });
+  }, [user?.username]);
 
   const handleAvatarChange = (e) => {
     const file = e.target.files[0];
@@ -2357,8 +2377,8 @@ function ProfilePage({ user, balance, xmrRate, onUpdateAvatar, onUpgrade, onDele
         <div className="space-y-4">
           <p className="text-[10px] text-gray-500 italic">Your unique network address for incoming XMR:</p>
           <div className="bg-black p-4 rounded-xl border border-white/5 flex items-center justify-between group">
-            <code className="text-[11px] text-amber-600 break-all font-mono">{user?.xmr_address || "GENERATING..."}</code>
-            <button onClick={() => {navigator.clipboard.writeText(user?.xmr_address); alert("COPIED");}} className="ml-4 p-2 bg-amber-900/20 text-amber-500 rounded hover:bg-amber-600 hover:text-black transition-all"><Copy size={14}/></button>
+            <code className="text-[11px] text-amber-600 break-all font-mono">{profileDepositAddress || "SUBADDRESS UNAVAILABLE (RPC OFFLINE)"}</code>
+            <button onClick={() => {navigator.clipboard.writeText(profileDepositAddress || ''); alert("COPIED");}} className="ml-4 p-2 bg-amber-900/20 text-amber-500 rounded hover:bg-amber-600 hover:text-black transition-all"><Copy size={14}/></button>
           </div>
         </div>
       </div>
@@ -3909,8 +3929,6 @@ function App() {
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-gray-300 font-sans uppercase italic font-black">
-      <AlphaBanner slotsUsed={1} />
-      <div className="alpha-banner-spacer" />
       {showPGPKeyModal && newUserPGPData && (
         <PGPPrivateKeyModal
           isOpen={showPGPKeyModal}
@@ -3920,8 +3938,9 @@ function App() {
       )}
 
       {/* HEADER */}
-      <header className="sticky top-0 z-50 bg-[#111111]/95 border-b border-amber-900/40 p-4 shadow-2xl backdrop-blur-md">
-        <div className="max-w-[1500px] mx-auto flex justify-between items-center px-4">
+      <header className="sticky top-0 z-50 bg-[#111111]/95 border-b border-amber-900/40 shadow-2xl backdrop-blur-md">
+        <AlphaBanner slotsUsed={5} />
+        <div className="max-w-[1500px] mx-auto flex justify-between items-center px-4 py-4">
           <div className="w-[200px]">
             <img src={Logo} alt="SilkGenesis" className="h-10 cursor-pointer hover:scale-105 transition-all" onClick={() => { setActiveTab('home'); setSelectedCategory('All'); }}/>
           </div>
@@ -4334,107 +4353,7 @@ function App() {
 
           {/* ADMIN PANEL */}
           {activeTab === 'admin_panel' && user?.role === 'admin' && (
-            <div className="space-y-8 animate-in fade-in duration-500">
-              <h2 className="text-3xl font-black text-red-500 flex items-center gap-3">
-                <Terminal size={32}/> Admin Control Panel
-              </h2>
-
-              {/* CREATE USER */}
-              <div className="bg-[#111] border border-white/5 p-8 rounded-3xl">
-                <h3 className="text-white text-sm mb-6 flex items-center gap-3"><UserPlus size={18} className="text-amber-500"/> Fabricate Identity</h3>
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                  <input type="text" placeholder="USERNAME" value={adminNewUser} onChange={e => setAdminNewUser(e.target.value)} className="bg-black border border-white/10 p-4 rounded-xl text-[11px] text-amber-500 outline-none"/>
-                  <input type="password" placeholder="PASSPHRASE" value={adminNewPass} onChange={e => setAdminNewPass(e.target.value)} className="bg-black border border-white/10 p-4 rounded-xl text-[11px] text-amber-500 outline-none"/>
-                  <select value={adminNewRole} onChange={e => setAdminNewRole(e.target.value)} className="bg-black border border-white/10 p-4 rounded-xl text-[11px] text-gray-400 outline-none">
-                    <option value="buyer">BUYER</option>
-                    <option value="vendor">VENDOR</option>
-                    <option value="admin">ADMIN</option>
-                  </select>
-                  <button onClick={async () => {
-                    const ok = await handleAction('/api/admin/create-user', { username: adminNewUser, password: adminNewPass, role: adminNewRole });
-                    if (ok) { setAdminNewUser(''); setAdminNewPass(''); alert("NODE CREATED"); }
-                  }} className="bg-amber-600 text-black rounded-xl font-black text-[11px] hover:bg-amber-500 transition-all uppercase">
-                    Initialize Node
-                  </button>
-                </div>
-              </div>
-
-              {/* CATEGORY MANAGER */}
-              <AdminCategoryManager
-                categories={categories}
-                onAddCategory={handleAddCategory}
-                onDeleteCategory={handleDeleteCategory}
-              />
-
-              {/* DISPUTES */}
-              <div className="bg-amber-900/5 border border-amber-600/20 p-8 rounded-3xl shadow-2xl">
-                <h2 className="text-amber-500 text-xl mb-6 flex items-center gap-3"><Gavel size={24}/> Judicial Oversight (Disputes)</h2>
-                <div className="space-y-4">
-                  {disputes.length > 0 ? disputes.map(dis => (
-                    <div key={dis.id} className="bg-black/40 border border-white/5 p-6 rounded-2xl flex justify-between items-center">
-                      <div className="space-y-1">
-                        <div className="flex items-center gap-3">
-                          <span className="text-red-500 text-xs">#{dis.id}</span>
-                          <span className="text-white text-sm">{dis.buyer} vs {dis.vendor}</span>
-                        </div>
-                        <p className="text-[10px] text-gray-500 italic">Item: {dis.item_title} | Vault: {dis.amount} XMR</p>
-                      </div>
-                      <div className="flex gap-4">
-                        <button onClick={() => handleAction('/api/admin/resolve-dispute', { id: dis.id, winner: 'buyer' })} className="bg-blue-900/20 border border-blue-500 text-blue-500 px-4 py-2 rounded-xl text-[10px] hover:bg-blue-500 hover:text-black transition-all">Refund Buyer</button>
-                        <button onClick={() => handleAction('/api/admin/resolve-dispute', { id: dis.id, winner: 'vendor' })} className="bg-green-900/20 border border-green-500 text-green-500 px-4 py-2 rounded-xl text-[10px] hover:bg-green-500 hover:text-black transition-all">Pay Vendor</button>
-                      </div>
-                    </div>
-                  )) : (
-                    <div className="text-center py-10 border border-dashed border-white/10 rounded-2xl">
-                      <Scale size={32} className="mx-auto mb-2 opacity-10"/>
-                      <p className="text-[10px] text-gray-600">Peace in the network</p>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* USERS & VENDOR REQUESTS */}
-              <div className="grid grid-cols-2 gap-8">
-                <div className="bg-black/40 border border-white/5 p-6 rounded-3xl h-[400px] overflow-y-auto">
-                  <h3 className="text-white text-xs mb-4">Network Nodes ({allUsers.length})</h3>
-                  {allUsers.map(u => (
-                    <div key={u.username} className="flex justify-between items-center p-3 border-b border-white/5 group">
-                      <div>
-                        <span className="text-[11px]">{u.username}</span>
-                        <span className={`ml-2 text-[9px] ${u.role === 'admin' ? 'text-red-500' : u.role === 'vendor' ? 'text-purple-500' : 'text-blue-500'}`}>({u.role})</span>
-                      </div>
-                      <button onClick={() => handleAction(u.status === 'active' ? '/api/admin/ban-user' : '/api/admin/unban-user', { username: u.username })}
-                        className={`text-[9px] px-2 py-1 rounded ${u.status === 'active' ? 'text-red-500 border border-red-900' : 'text-green-500 border border-green-900'}`}>
-                        {u.status === 'active' ? 'BAN' : 'FREE'}
-                      </button>
-                    </div>
-                  ))}
-                </div>
-                <div className="bg-black/40 border border-white/5 p-6 rounded-3xl h-[400px] overflow-y-auto">
-                  <h3 className="text-white text-xs mb-4">Vendor Admissions ({sellerRequests.length})</h3>
-                  {sellerRequests.length === 0 ? (
-                    <div className="text-center py-10 text-gray-600 text-[10px]">No pending requests</div>
-                  ) : sellerRequests.map(req => (
-                    <div key={req.username} className="bg-black/60 border border-amber-900/20 p-4 rounded-xl mb-3">
-                      <div className="flex justify-between items-start mb-2">
-                        <div>
-                          <span className="text-[11px] text-white font-black">{req.username}</span>
-                          <p className="text-[9px] text-green-500 mt-1">✅ Paid: {req.paid?.toFixed(4)} XMR ($200)</p>
-                        </div>
-                        <div className="flex gap-2">
-                          <button onClick={() => handleAction('/api/admin/approve-seller', { username: req.username })} className="text-green-500 hover:bg-green-500 hover:text-black p-1 rounded transition-all"><CheckCircle size={16}/></button>
-                          <button onClick={() => handleAction('/api/admin/reject-seller', { username: req.username })} className="text-red-500 hover:bg-red-500 hover:text-black p-1 rounded transition-all"><XCircle size={16}/></button>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* MASTER WALLET SEED PHRASE */}
-              <MnemonicViewer user={user} />
-
-            </div>
+            <AdminDashboard user={user} />
           )}
 
           {/* MY LISTINGS TAB */}
