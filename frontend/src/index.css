@@ -77,12 +77,3 @@ body {
     80% { transform: translate(2px, -2px) }
     100% { transform: translate(0) }
 }
-
-/* Global fallbacks to keep the top alpha banner visible across pages */
-.alpha-banner-spacer {
-    height: 64px;
-}
-
-.alpha-banner {
-    z-index: 9999;
-}
