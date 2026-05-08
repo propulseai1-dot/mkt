@@ -1939,11 +1939,12 @@ function FounderVendorBadge({ compact = false }) {
 // ============================================================
 // VENDOR PROFILE PAGE
 // ============================================================
-function VendorProfilePage({ vendorName, products, onBack, onViewProduct }) {
+function VendorProfilePage({ vendorName, products, onBack, onViewProduct, currentUser, authenticatedFetch, onBadgeUpdated }) {
   const [reviews, setReviews] = useState([]);
   const [avgRating, setAvgRating] = useState(0);
   const [totalReviews, setTotalReviews] = useState(0);
   const [vendorBadge, setVendorBadge] = useState(null);
+  const [badgeSaving, setBadgeSaving] = useState(false);
   const vendorProducts = products.filter(p => p.vendor === vendorName);
   const totalSales = vendorProducts.reduce((sum, p) => sum + (p.sales || 0), 0);
 
@@ -1961,6 +1962,35 @@ function VendorProfilePage({ vendorName, products, onBack, onViewProduct }) {
     };
     loadReviews();
   }, [vendorName]);
+
+  const isAdmin = currentUser?.role === 'admin';
+  const toggleFounderBadge = async () => {
+    if (!isAdmin || !authenticatedFetch || badgeSaving) return;
+    setBadgeSaving(true);
+    try {
+      const res = await authenticatedFetch(`/api/admin/vendor/${vendorName}/founder-badge`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: !vendorBadge?.founder_vendor_badge }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(`Error: ${data?.detail || 'Unable to update founder badge'}`);
+      } else {
+        setVendorBadge({
+          username: vendorName,
+          founder_vendor_badge: !!data.founder_vendor_badge,
+          founder_vendor_serial: data.founder_vendor_serial,
+          founder_vendor_badge_label: data.founder_vendor_badge ? 'Founder Vendor' : null,
+        });
+        if (typeof onBadgeUpdated === 'function') onBadgeUpdated();
+      }
+    } catch {
+      alert('Connection error while updating founder badge');
+    } finally {
+      setBadgeSaving(false);
+    }
+  };
 
   useEffect(() => {
     const loadVendorBadge = async () => {
@@ -2005,6 +2035,26 @@ function VendorProfilePage({ vendorName, products, onBack, onViewProduct }) {
               <div className="text-gray-500"><span className="text-white font-black">{totalSales}</span> total sales</div>
               <div className="text-gray-500"><span className="text-white font-black">{vendorProducts.length}</span> active listings</div>
             </div>
+            {isAdmin && (
+              <div className="mt-4">
+                <button
+                  type="button"
+                  onClick={toggleFounderBadge}
+                  disabled={badgeSaving}
+                  className={`px-4 py-2 rounded-lg text-xs font-black uppercase tracking-wide border transition-all ${
+                    vendorBadge?.founder_vendor_badge
+                      ? 'border-red-500/40 text-red-300 hover:bg-red-900/20'
+                      : 'border-amber-500/40 text-amber-300 hover:bg-amber-900/20'
+                  } ${badgeSaving ? 'opacity-60 cursor-not-allowed' : ''}`}
+                >
+                  {badgeSaving
+                    ? 'Saving...'
+                    : vendorBadge?.founder_vendor_badge
+                      ? 'Remove Founder Badge'
+                      : 'Set Founder Badge'}
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -5685,6 +5735,9 @@ function App() {
               vendorName={selectedVendor} products={products}
               onBack={() => setActiveTab('home')}
               onViewProduct={(product) => { setSelectedProduct(product); setActiveTab('product-detail'); }}
+              currentUser={user}
+              authenticatedFetch={authenticatedFetch}
+              onBadgeUpdated={loadData}
             />
           )}
 

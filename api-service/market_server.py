@@ -32,7 +32,7 @@ from db_persist import (
     save_order, load_all_orders,
     save_all_order_messages, load_all_order_messages,
     save_all_general_messages, load_all_general_messages,
-    save_review, load_all_reviews,
+    save_review, load_all_reviews, save_all_reviews,
     save_all_disputes, load_all_disputes,
     save_vendor_bond, load_all_vendor_bonds,
     start_auto_backup, backup_now, list_backups,
@@ -1815,6 +1815,43 @@ def get_vendor_badge(username: str):
         "founder_vendor_badge_label": "Founder Vendor" if badge else None
     }
 
+@app.post("/api/admin/vendor/{username}/founder-badge")
+def admin_set_founder_badge(username: str, data: dict, _admin: dict = Depends(require_admin)):
+    """Admin toggle for founder badge on a vendor profile."""
+    key = _resolve_user_db_key(username)
+    if key is None or users_db.get(key, {}).get("role") != "vendor":
+        raise HTTPException(status_code=404, detail="VENDOR_NOT_FOUND")
+
+    enabled = bool(data.get("enabled", True))
+    user = users_db[key]
+
+    if enabled:
+        if not user.get("founder_vendor_badge"):
+            user["founder_vendor_badge"] = True
+            user["founder_vendor_granted_at"] = datetime.utcnow().isoformat()
+    else:
+        user["founder_vendor_badge"] = False
+        user["founder_vendor_serial"] = None
+        user["founder_vendor_granted_at"] = None
+
+    # Keep serials contiguous across all founder vendors.
+    founders = [(k, u) for k, u in users_db.items() if u.get("role") == "vendor" and u.get("founder_vendor_badge")]
+    founders.sort(key=lambda pair: ((pair[1].get("founder_vendor_serial") or 10**9), pair[0].lower()))
+    for idx, (_, vuser) in enumerate(founders, start=1):
+        vuser["founder_vendor_serial"] = idx
+
+    save_all_users(users_db)
+    save_users_persist()
+
+    return {
+        "status": "success",
+        "username": key,
+        "founder_vendor_badge": bool(user.get("founder_vendor_badge")),
+        "founder_vendor_serial": user.get("founder_vendor_serial"),
+        "claimed": len(founders),
+        "limit": FOUNDER_VENDOR_BADGE_LIMIT,
+    }
+
 @app.get("/api/top-products")
 def get_top_products():
     """Retourner les produits les plus vendus"""
@@ -3136,6 +3173,54 @@ def delete_user(data: dict, _admin: dict = Depends(require_admin)):
     if to_del:
         save_all_listings(listings_db)
     return {"success": True, "message": f"{username} deleted ({len(to_del)} listings removed)"}
+
+@app.post("/api/admin/purge-vendors-data")
+def purge_vendors_data(data: dict, _admin: dict = Depends(require_admin)):
+    """
+    Removes all vendor accounts, all vendor listings, and all reviews.
+    Requires explicit confirmation string: {"confirm":"PURGE_VENDORS"}.
+    """
+    if (data or {}).get("confirm") != "PURGE_VENDORS":
+        raise HTTPException(status_code=400, detail="CONFIRMATION_REQUIRED")
+
+    vendors = [uname for uname, u in users_db.items() if u.get("role") == "vendor"]
+    removed_vendor_count = 0
+    for uname in vendors:
+        if uname in users_db:
+            del users_db[uname]
+            removed_vendor_count += 1
+
+    removed_listing_count = 0
+    for lid in list(listings_db.keys()):
+        l = listings_db.get(lid, {})
+        if l.get("vendor") in vendors:
+            del listings_db[lid]
+            removed_listing_count += 1
+
+    removed_review_count = sum(len(items or []) for items in reviews_db.values())
+    reviews_db.clear()
+
+    # Remove pending vendor requests from now deleted accounts.
+    if seller_requests:
+        seller_requests[:] = [r for r in seller_requests if r.get("username") not in vendors]
+
+    # Recompute founder serials if needed.
+    founders = [(k, u) for k, u in users_db.items() if u.get("role") == "vendor" and u.get("founder_vendor_badge")]
+    founders.sort(key=lambda pair: ((pair[1].get("founder_vendor_serial") or 10**9), pair[0].lower()))
+    for idx, (_, vuser) in enumerate(founders, start=1):
+        vuser["founder_vendor_serial"] = idx
+
+    save_all_users(users_db)
+    save_users_persist()
+    save_all_listings(listings_db)
+    save_all_reviews(reviews_db)
+
+    return {
+        "status": "success",
+        "vendors_removed": removed_vendor_count,
+        "listings_removed": removed_listing_count,
+        "reviews_removed": removed_review_count,
+    }
 
 def _find_listing_db_key(listing_id: str):
     """Cle dans listings_db, ou None si introuvable."""
