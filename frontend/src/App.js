@@ -4434,6 +4434,34 @@ function App() {
     return res;
   }, [sessionToken]);
 
+  // Keep homepage vendor/founder widgets fresh even if other dashboard calls fail.
+  const refreshHomepagePanels = useCallback(async () => {
+    try {
+      const [tvRes, foundersRes] = await Promise.all([
+        fetch(silkGenesisApiUrl('/api/top-vendors')),
+        fetch(silkGenesisApiUrl('/api/founders/stats')),
+      ]);
+
+      if (tvRes.ok) {
+        const d = await tvRes.json();
+        setTopVendors(Array.isArray(d?.vendors) ? d.vendors : []);
+      }
+      if (foundersRes.ok) {
+        const d = await foundersRes.json();
+        setFounderStats({
+          claimed: Number(d?.claimed || 0),
+          limit: Number(d?.limit || 20),
+        });
+      }
+    } catch (_) {
+      // Non-blocking fallback: loadData() still handles these when available.
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshHomepagePanels();
+  }, [refreshHomepagePanels]);
+
   // Vendor panel states
   const [newTitle, setNewTitle] = useState('');
   const [newPriceUsd, setNewPriceUsd] = useState('');
