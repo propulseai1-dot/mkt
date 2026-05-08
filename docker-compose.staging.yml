@@ -1,0 +1,98 @@
+# SilkGenesis — Staging/local stack
+# Usage:
+#   copy env.staging.example .env.staging
+#   docker compose -f docker-compose.staging.yml --env-file .env.staging up -d --build
+#
+# Frontend:
+#   Le gateway sert le build React depuis ./frontend/build
+#   -> lancer "npm ci && npm run build" dans ./frontend avant docker compose
+
+services:
+  frontend-build:
+    build: ./frontend
+    container_name: sg_frontend_build_staging
+    env_file:
+      - .env.staging
+    environment:
+      # CRA reads this at build time for relative API calls
+      REACT_APP_API_BASE: /api
+    volumes:
+      - frontend_build:/app/build
+    networks:
+      - silk-net
+    restart: "no"
+
+  gateway:
+    build: ./gateway
+    container_name: sg_gateway_staging
+    depends_on:
+      frontend-build:
+        condition: service_completed_successfully
+      api:
+        condition: service_healthy
+    networks:
+      - silk-net
+    ports:
+      - "127.0.0.1:8080:80"
+    volumes:
+      - frontend_build:/app/frontend/build:ro
+    restart: unless-stopped
+
+  api:
+    build: ./api-service
+    container_name: sg_api_staging
+    depends_on:
+      price-oracle:
+        condition: service_started
+    env_file:
+      - .env.staging
+    environment:
+      SILKGENESIS_DATA_DIR: /app/data
+      # Optionnel: override via .env.staging
+      MONERO_RPC_URL: ${MONERO_RPC_URL:-http://127.0.0.1:18082/json_rpc}
+      PRICE_ORACLE_URL: http://price-oracle:9000/latest
+    volumes:
+      - silkgenesis_staging_data:/app/data
+    expose:
+      - "5000"
+    networks:
+      - silk-net
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/api/health', timeout=6).read()",
+        ]
+      interval: 20s
+      timeout: 10s
+      retries: 6
+      start_period: 60s
+
+  price-oracle:
+    build: ./price-oracle
+    container_name: sg_price_oracle_staging
+    env_file:
+      - .env.staging
+    environment:
+      PRICE_ORACLE_REFRESH_SEC: ${PRICE_ORACLE_REFRESH_SEC:-20}
+      PRICE_ORACLE_ALLOW_CLEARNET: ${PRICE_ORACLE_ALLOW_CLEARNET:-1}
+      PRICE_ORACLE_TOKEN: ${PRICE_ORACLE_TOKEN:-}
+      PRICE_ORACLE_FALLBACK_XMR_USD: ${PRICE_ORACLE_FALLBACK_XMR_USD:-165.0}
+      PRICE_ORACLE_FALLBACK_BTC_USD: ${PRICE_ORACLE_FALLBACK_BTC_USD:-74000.0}
+    expose:
+      - "9000"
+    networks:
+      - silk-net
+    restart: unless-stopped
+
+networks:
+  silk-net:
+    driver: bridge
+
+volumes:
+  silkgenesis_staging_data:
+  frontend_build:
+

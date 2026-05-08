@@ -1,53 +1,100 @@
-version: '3.8'
+# SilkGenesis — stack prod Tor (gateway Tor+Nginx + API + Monero RPC)
+# Prerequis : cp env.example .env && editer .env
+# Build front : cd frontend && npm ci && npm run build
+# Demarrage : docker compose up -d --build
+#
+# L'API utilise SQLite + JSON sous SILKGENESIS_DATA_DIR (/app/data), pas PostgreSQL.
 
 services:
-  # GATEWAY : Le point d'entrée Tor + Nginx
   gateway:
     build: ./gateway
     container_name: sg_gateway
     depends_on:
-      - frontend
-      - api
+      api:
+        condition: service_healthy
     networks:
       - silk-net
     ports:
-      - "127.0.0.1:8080:80" # Accessible uniquement sur ton HP Victus pour les tests
+      - "127.0.0.1:8080:80"
+    volumes:
+      - ./frontend/build:/app/frontend/build:ro
+      - ./gateway/tor-data:/var/lib/tor
+      - ./gateway/tor-logs:/var/log/tor
+    restart: unless-stopped
 
-  # FRONTEND : L'interface Mix 2011/2026 (React)
-  frontend:
-    build: ./frontend
-    container_name: sg_frontend
-    networks:
-      - silk-net
-    expose:
-      - "3000"
-
-  # API : Le cerveau en Python (FastAPI)
   api:
     build: ./api-service
     container_name: sg_api
     depends_on:
-      - database
+      price-oracle:
+        condition: service_started
+      monero-rpc:
+        condition: service_started
+    env_file:
+      - .env
     environment:
-      - DB_URL=postgresql://user:pass@database:5432/silkgenesis
-    networks:
-      - silk-net
+      SILKGENESIS_DATA_DIR: /app/data
+      MONERO_RPC_URL: http://monero-rpc:18083/json_rpc
+      PRICE_ORACLE_URL: http://price-oracle:9000/latest
+    volumes:
+      - silkgenesis_prod_data:/app/data
     expose:
       - "5000"
-
-  # DATABASE : PostgreSQL (Stockage sécurisé)
-  database:
-    image: postgres:15-alpine
-    container_name: sg_db
-    environment:
-      - POSTGRES_USER=user
-      - POSTGRES_PASSWORD=pass
-      - POSTGRES_DB=silkgenesis
-    volumes:
-      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
       - silk-net
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/api/health', timeout=6).read()",
+        ]
+      interval: 25s
+      timeout: 10s
+      retries: 6
+      start_period: 120s
+
+  price-oracle:
+    build: ./price-oracle
+    container_name: sg_price_oracle
+    env_file:
+      - .env
+    environment:
+      PRICE_ORACLE_REFRESH_SEC: ${PRICE_ORACLE_REFRESH_SEC:-20}
+      PRICE_ORACLE_ALLOW_CLEARNET: ${PRICE_ORACLE_ALLOW_CLEARNET:-1}
+      PRICE_ORACLE_TOKEN: ${PRICE_ORACLE_TOKEN:-}
+      PRICE_ORACLE_FALLBACK_XMR_USD: ${PRICE_ORACLE_FALLBACK_XMR_USD:-165.0}
+      PRICE_ORACLE_FALLBACK_BTC_USD: ${PRICE_ORACLE_FALLBACK_BTC_USD:-74000.0}
+    expose:
+      - "9000"
+    networks:
+      - silk-net
+    restart: unless-stopped
+
+  monero-rpc:
+    image: sethforprivacy/monero-wallet-rpc:latest
+    container_name: sg_monero_rpc
+    env_file:
+      - .env
+    volumes:
+      - ./monero-data:/wallet
+    command:
+      - --rpc-bind-ip=0.0.0.0
+      - --rpc-bind-port=18083
+      - --rpc-login=${MONERO_RPC_USER}:${MONERO_RPC_PASS}
+      - --daemon-address=${MONERO_DAEMON_ADDRESS:-127.0.0.1:18081}
+      - --wallet-dir=/wallet
+      - --untrusted-daemon
+      - --confirm-external-bind
+    networks:
+      - silk-net
+    restart: unless-stopped
 
 networks:
   silk-net:
     driver: bridge
+
+volumes:
+  silkgenesis_prod_data:

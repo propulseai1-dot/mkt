@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>SilkGenesis - Reset Session</title>
+  <style>
+    body { background: #050505; color: #f39c12; font-family: monospace; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; text-align: center; }
+    button { background: #f39c12; color: #000; border: none; padding: 16px 32px; font-size: 16px; font-weight: bold; cursor: pointer; border-radius: 8px; margin-top: 20px; }
+    button:hover { background: #e67e22; }
+  </style>
+</head>
+<body>
+  <div>
+    <h1>🔄 Session Reset</h1>
+    <p>Click to clear your session and reload the app</p>
+    <button onclick="localStorage.clear(); window.location='/';">Clear Session & Go to App</button>
+  </div>
+  <script>
+    // Auto-clear and redirect
+    localStorage.removeItem('silkGenesis_session');
+    console.log('Session cleared');
+  </script>
+</body>
+</html>

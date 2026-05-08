@@ -1,0 +1,32 @@
+================================================================================
+SILKGENESIS - Pile Monero STAGENET (test, pas de XMR reels)
+================================================================================
+
+1) Un seul lancement (recommande)
+   Double-clic : START_STAGENET_STACK.bat
+   - demarre monerod (stagenet) si monero-cli\monerod.exe est present
+   - demarre monero-wallet-rpc marketplace (port 18082) + aligne les variables
+   - demarre l'API sur http://0.0.0.0:5000
+
+2) Etapes separees
+   a) SET_SILKGENESIS_STAGENET_ENV.bat  (a appeler en "call" ; ne lance rien)
+   b) START_MONEROD_STAGENET.bat         (daemon stagenet, donnees: stagenet-lmdb\)
+   c) START_MULTISIG_WALLETS.bat         (wallet-rpc 18082, stagenet)
+   d) START_BACKEND.bat                  (API avec memes variables d'env)
+
+3) Variables
+   Tout est dans SET_SILKGENESIS_STAGENET_ENV.bat (RPC 18082, monerod 127.0.0.1:38080
+   par defaut). Si ton monerod ecoute ailleurs, ajuste MONERO_DAEMON.
+
+4) Faucet XMR stagenet
+   https://community.xmr.to/faucet/stagenet/
+
+5) Mainnet
+   Ne pas utiliser ce pack tel quel. Duplique le SET en adaptant MONERO_NETWORK,
+   ports et chemins, et lancez des wallets mainnet separes.
+
+6) Fichiers cles
+   - SET_SILKGENESIS_STAGENET_ENV.bat   variables partagees
+   - START_STAGENET_STACK.bat           orchestre tout
+   - monero-cli\                        binaires Monero (monerod, monero-wallet-rpc)
+================================================================================

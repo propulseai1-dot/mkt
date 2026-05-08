@@ -1,0 +1,108 @@
+╔══════════════════════════════════════════════════════════════════════════╗
+║                                                                          ║
+║   🚀 INSTALLATION MONERO POUR SILKGENESIS - GUIDE RAPIDE 🚀            ║
+║                                                                          ║
+╚══════════════════════════════════════════════════════════════════════════╝
+
+📋 ÉTAPES SIMPLES:
+
+┌──────────────────────────────────────────────────────────────────────────┐
+│ ÉTAPE 1: TÉLÉCHARGER MONERO CLI                                         │
+└──────────────────────────────────────────────────────────────────────────┘
+
+1. Double-cliquez sur: INSTALL_MONERO_DIRECT.bat
+
+2. Le script va:
+   ✓ Ouvrir votre navigateur sur getmonero.org
+   ✓ Ouvrir le dossier "monero-cli"
+   
+3. Sur le site web:
+   ✓ Cliquez sur "Command-Line Tools Only"
+   ✓ Téléchargez la version Windows 64-bit
+   ✓ Extrayez le fichier ZIP
+   
+4. Copiez TOUS les fichiers .exe et .dll dans le dossier "monero-cli"
+
+5. Revenez au script et appuyez sur une touche
+
+
+┌──────────────────────────────────────────────────────────────────────────┐
+│ ÉTAPE 2: CRÉER VOTRE WALLET                                             │
+└──────────────────────────────────────────────────────────────────────────┘
+
+1. Double-cliquez sur: setup_monero_wallet.bat
+
+2. Entrez un mot de passe (NOTEZ-LE!)
+
+3. Confirmez le mot de passe
+
+4. NOTEZ LA SEED (25 mots en anglais) - NE LA PERDEZ JAMAIS!
+
+5. Tapez: exit
+
+
+┌──────────────────────────────────────────────────────────────────────────┐
+│ ÉTAPE 3: DÉMARRER LE SERVEUR RPC                                        │
+└──────────────────────────────────────────────────────────────────────────┘
+
+1. Double-cliquez sur: start_monero_rpc.bat
+
+2. Entrez votre mot de passe
+
+3. LAISSEZ CETTE FENÊTRE OUVERTE!
+
+
+┌──────────────────────────────────────────────────────────────────────────┐
+│ ÉTAPE 4: TESTER!                                                        │
+└──────────────────────────────────────────────────────────────────────────┘
+
+1. Votre serveur backend tourne déjà (market_server.py)
+
+2. Démarrez le frontend:
+   cd frontend
+   npm start
+
+3. Créez un compte sur http://localhost:3000
+
+4. Cliquez "DEPOSIT" - vous verrez votre adresse XMR unique!
+
+5. Obtenez des XMR testnet gratuits: https://testnet.xmr.to/
+
+6. Envoyez des XMR à votre adresse
+
+7. Attendez 10 confirmations (~20 minutes)
+
+8. Votre balance sera mis à jour automatiquement!
+
+
+╔══════════════════════════════════════════════════════════════════════════╗
+║                                                                          ║
+║   ✅ VOTRE MARKETPLACE UTILISERA DE VRAIES TRANSACTIONS XMR!           ║
+║                                                                          ║
+╚══════════════════════════════════════════════════════════════════════════╝
+
+
+📁 FICHIERS IMPORTANTS:
+
+✓ INSTALL_MONERO_DIRECT.bat  → Étape 1: Installer Monero
+✓ setup_monero_wallet.bat    → Étape 2: Créer wallet
+✓ start_monero_rpc.bat       → Étape 3: Démarrer RPC
+✓ README_MONERO_REEL.md      → Guide complet détaillé
+
+
+⚠️ IMPORTANT:
+
+• TESTNET = XMR gratuits, pas d'argent réel
+• Notez votre SEED (25 mots) - seule façon de récupérer votre wallet!
+• Gardez la fenêtre RPC ouverte pendant l'utilisation
+• Le système d'escrow est déjà configuré et fonctionnel!
+
+
+🎯 COMMENCEZ PAR:
+
+Double-cliquez sur: INSTALL_MONERO_DIRECT.bat
+
+
+💡 BESOIN D'AIDE?
+
+Lisez: README_MONERO_REEL.md (guide complet avec captures d'écran)

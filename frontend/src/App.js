@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+﻿import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { 
   ShieldCheck, Star, TrendingUp, TrendingDown, Wallet, Shield, 
   ChevronRight, ChevronDown, Camera, Fingerprint, Terminal,
   Layers, Trash2, CheckCircle, XCircle, Zap, UserPlus, DollarSign, 
-  UserMinus, Copy, Gavel, Scale, Home, MessageSquare, PlusCircle, 
+  UserMinus, Copy, Home, MessageSquare, PlusCircle, Crown,
   User as UserIcon, Package, ArrowUpCircle, ArrowDownCircle, Lock,
   Search, Filter, Tag, Unlock, Key, Globe
 } from 'lucide-react';
@@ -15,6 +15,8 @@ import ReleaseFunds from './ReleaseFunds';
 import AboutPage from './AboutPage';
 import CanaryPage from './CanaryPage';
 import AlphaBanner from './components/AlphaBanner';
+import { TwoFactorSetup } from './TwoFactorSetup';
+import { silkApiUrl as silkGenesisApiUrl } from './silkApi';
 
 function SystemBanner() {
   const [dismissed, setDismissed] = useState(false);
@@ -25,10 +27,10 @@ function SystemBanner() {
       backgroundColor: '#ff4500', // Orange/Rouge ultra visible
       color: 'white',
       width: '100%',
-      position: 'fixed', // On la fixe en haut de l'écran quoi qu'il arrive
+      position: 'fixed', // On la fixe en haut de the screen quoi qu'il arrive
       top: 0,
       left: 0,
-      zIndex: 99999, // On passe au-dessus de TOUT
+      zIndex: 99999, // Render above everything
       padding: '10px',
       textAlign: 'center',
       fontWeight: 'bold',
@@ -58,6 +60,61 @@ function playNotificationSound() {
     osc.start(ctx.currentTime);
     osc.stop(ctx.currentTime + 0.4);
   } catch(e) {}
+}
+
+// QR Monero : l'API exige un Bearer (anti abus) — <img src> ne peut pas envoyer de header.
+function AuthenticatedMoneroQrImg({ srcPathWithQuery, size, alt }) {
+  const [blobUrl, setBlobUrl] = React.useState(null);
+  const [failed, setFailed] = React.useState(false);
+  React.useEffect(() => {
+    let cancelled = false;
+    let objectUrl = null;
+    (async () => {
+      setFailed(false);
+      setBlobUrl(null);
+      try {
+        const raw = localStorage.getItem('silkGenesis_session');
+        const token = raw ? JSON.parse(raw).session_token : null;
+        if (!token || !srcPathWithQuery) return;
+        const r = await fetch(srcPathWithQuery, { headers: { Authorization: `Bearer ${token}` } });
+        if (!r.ok) {
+          if (!cancelled) setFailed(true);
+          return;
+        }
+        const blob = await r.blob();
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(blob);
+        setBlobUrl(objectUrl);
+      } catch {
+        if (!cancelled) setFailed(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [srcPathWithQuery]);
+  if (failed || !blobUrl) {
+    return (
+      <div
+        style={{
+          width: size,
+          height: size,
+          background: '#111',
+          borderRadius: 8,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          color: '#666',
+          fontSize: 10,
+          fontFamily: 'monospace',
+        }}
+      >
+        {failed ? 'QR unavailable' : '…'}
+      </div>
+    );
+  }
+  return <img src={blobUrl} alt={alt || 'Monero QR'} width={size} height={size} style={{ display: 'block', borderRadius: 4 }} />;
 }
 
 // ============================================================
@@ -106,8 +163,15 @@ function PGPModal({ isOpen, onClose, user }) {
   }, [isOpen, user]);
   if (!isOpen) return null;
   const handleSave = async () => {
+    // Note: This component is outside App, so we can't use authenticatedFetch directly unless we pass it.
+    // However, we can use a manual fetch with the token from localStorage.
+    const token = (JSON.parse(localStorage.getItem('silkGenesis_session') || '{}')).session_token;
     const res = await fetch('/api/pgp/set', {
-      method: 'POST', headers: {'Content-Type':'application/json'},
+      method: 'POST', 
+      headers: {
+        'Content-Type':'application/json',
+        'Authorization': `Bearer ${token}`
+      },
       body: JSON.stringify({ username: user.username, pgp_key: pgpKey })
     });
     const d = await res.json();
@@ -159,8 +223,24 @@ function DepositModal({ isOpen, onClose, user }) {
   React.useEffect(() => {
     if (!isOpen || !user?.username) return;
     setLoadingAddr(true);
+    const sessionData = JSON.parse(localStorage.getItem('silkGenesis_session') || '{}');
+    const token = sessionData.session_token;
     fetch(`/api/wallet/deposit-address/${user.username}`)
-      .then(r => r.json())
+      .then(r => {
+        if (!r.ok) {
+          throw new Error(`HTTP_${r.status}`);
+        }
+        return r.json();
+      })
+      .catch((e) => {
+        // Retry with bearer token for secured backend routes.
+        if (token) {
+          return fetch(`/api/wallet/deposit-address/${user.username}`, {
+            headers: { Authorization: `Bearer ${token}` }
+          }).then(r2 => r2.json());
+        }
+        throw e;
+      })
       .then(d => {
         if (d.address && d.address.startsWith('8')) {
           setDepositAddress(d.address);
@@ -184,13 +264,17 @@ function DepositModal({ isOpen, onClose, user }) {
     }
   };
 
-  // Polling du statut de dépôt toutes les 15s
+  // Polling du statut de deposit toutes les 15s
   React.useEffect(() => {
     if (!isOpen || !depositAddress) return;
     setPolling(true);
     const poll = async () => {
       try {
-        const resp = await fetch(`/api/deposit/status/${depositAddress}`);
+        const sessionData = JSON.parse(localStorage.getItem('silkGenesis_session') || '{}');
+        const token = sessionData.session_token;
+        const resp = await fetch(`/api/deposit/status/${depositAddress}`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
         if (resp.ok) {
           const data = await resp.json();
           if (data.status !== 'not_found') setDepositStatus(data);
@@ -204,9 +288,9 @@ function DepositModal({ isOpen, onClose, user }) {
 
   if (!isOpen) return null;
 
-  // QR code URI Monero
+  // QR generated locally by backend (offline, no third-party service)
   const qrUrl = depositAddress
-    ? `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent('monero:' + depositAddress)}&bgcolor=0a0a0a&color=f59e0b&format=png`
+    ? `/api/qr/monero?address=${encodeURIComponent(depositAddress)}&size=180`
     : null;
 
   return (
@@ -219,7 +303,7 @@ function DepositModal({ isOpen, onClose, user }) {
           <button onClick={onClose} className="text-gray-500 hover:text-white text-2xl leading-none">×</button>
         </div>
 
-        {/* Status banner si dépôt détecté */}
+        {/* Status banner si deposit detecte */}
         {depositStatus && depositStatus.received_xmr > 0 && (
           <div className="mb-4 p-3 rounded-xl border" style={{
             background: depositStatus.status === 'confirmed' ? 'rgba(34,197,94,0.1)' : 'rgba(249,115,22,0.1)',
@@ -229,21 +313,21 @@ function DepositModal({ isOpen, onClose, user }) {
               {depositStatus.status === 'confirmed' ? '✅ Deposit Confirmed!' : '⏳ Transaction Detected'}
             </p>
             <p className="text-xs text-gray-400 mt-1">
-              {depositStatus.received_xmr?.toFixed(6)} XMR — {depositStatus.confirmations}/{depositStatus.confirmations_needed || 10} confirmations
+              {depositStatus.received_xmr?.toFixed(6)} XMR - {depositStatus.confirmations}/{depositStatus.confirmations_needed || 10} confirmations
             </p>
           </div>
         )}
 
         {/* QR Code */}
-        {qrUrl && (
+        {qrUrl ? (
           <div className="flex justify-center mb-5">
             <div className="p-3 border-2 border-amber-600 rounded-xl bg-black inline-block">
-              <img src={qrUrl} alt="XMR QR Code" width={180} height={180} className="rounded" />
+              <AuthenticatedMoneroQrImg srcPathWithQuery={qrUrl} size={180} alt="XMR QR Code" />
             </div>
           </div>
-        )}
+        ) : null}
 
-        {/* Adresse */}
+        {/* Address */}
         <div className="bg-black p-4 rounded-xl border border-white/5 mb-4">
           <p className="text-[10px] text-gray-500 mb-2 uppercase tracking-widest">Your Unique Deposit Address:</p>
           <div className="flex items-start gap-3">
@@ -284,44 +368,44 @@ function DepositModal({ isOpen, onClose, user }) {
 
 
 // ============================================================
-// PGP CHAT STATUS - Affiche si le chat est chiffré PGP ou non
+// PGP CHAT STATUS - Displays si le chat est encrypted PGP ou non
 // ============================================================
 function PGPChatStatus({ buyer, vendor }) {
-  const [buyerHasPGP, setBuyerHasPGP] = React.useState(null);
-  const [vendorHasPGP, setVendorHasPGP] = React.useState(null);
+  const [buyerSetupReady, setBuyerSetupReady] = React.useState(null);
+  const [vendorSetupReady, setVendorSetupReady] = React.useState(null);
 
   React.useEffect(() => {
     if (buyer) {
       fetch(`/api/pgp/${buyer}`)
         .then(r => r.json())
-        .then(d => setBuyerHasPGP(!!d.pgp_key))
-        .catch(() => setBuyerHasPGP(false));
+        .then(d => setBuyerSetupReady(!!d.pgp_setup_completed))
+        .catch(() => setBuyerSetupReady(false));
     }
     if (vendor) {
       fetch(`/api/pgp/${vendor}`)
         .then(r => r.json())
-        .then(d => setVendorHasPGP(!!d.pgp_key))
-        .catch(() => setVendorHasPGP(false));
+        .then(d => setVendorSetupReady(!!d.pgp_setup_completed))
+        .catch(() => setVendorSetupReady(false));
     }
   }, [buyer, vendor]);
 
-  const bothHavePGP = buyerHasPGP && vendorHasPGP;
-  const noneHavePGP = buyerHasPGP === false && vendorHasPGP === false;
+  const bothReady = buyerSetupReady && vendorSetupReady;
+  const noneReady = buyerSetupReady === false && vendorSetupReady === false;
 
-  if (bothHavePGP) {
+  if (bothReady) {
     return (
       <div className="flex items-center gap-2 bg-green-900/10 border border-green-600/20 px-3 py-2 rounded-lg">
         <Lock size={14} className="text-green-500 animate-pulse"/>
-        <span className="text-green-500 text-[9px] font-black uppercase">🔐 PGP Encrypted — Both parties have PGP keys</span>
+        <span className="text-green-500 text-[9px] font-black uppercase">🔐 PGP Encrypted - Both parties completed setup</span>
       </div>
     );
   }
 
-  if (noneHavePGP) {
+  if (noneReady) {
     return (
       <div className="flex items-center gap-2 bg-red-900/10 border border-red-600/30 px-3 py-2 rounded-lg">
         <Unlock size={14} className="text-red-500 animate-pulse"/>
-        <span className="text-red-400 text-[9px] font-black uppercase">⚠️ UNENCRYPTED — Neither party has a PGP key. Messages are NOT encrypted.</span>
+        <span className="text-red-400 text-[9px] font-black uppercase">⚠️ SETUP REQUIRED - Both parties must complete PGP setup in Identity.</span>
       </div>
     );
   }
@@ -330,7 +414,7 @@ function PGPChatStatus({ buyer, vendor }) {
     <div className="flex items-center gap-2 bg-yellow-900/10 border border-yellow-600/30 px-3 py-2 rounded-lg">
       <Unlock size={14} className="text-yellow-500"/>
       <span className="text-yellow-400 text-[9px] font-black uppercase">
-        ⚠️ PARTIAL ENCRYPTION — {!buyerHasPGP ? 'Buyer' : 'Vendor'} has no PGP key. Set your PGP key in Profile for encrypted chat.
+        ⚠️ PARTIAL SETUP - {!buyerSetupReady ? 'Buyer' : 'Vendor'} must finish PGP setup in Identity.
       </span>
     </div>
   );
@@ -351,13 +435,13 @@ function PGPChatStatus({ buyer, vendor }) {
 /**
  * SILKGENESIS - Monero Checkout & Release Funds Components
  * 
- * MoneroCheckout: Affiche l'adresse de dépôt + QR code + polling du statut
- * ReleaseFundsButton: Bouton "Release the Funds" pour le buyer après réception
- * OrderPaymentStatus: Statut de paiement en temps réel
+ * MoneroCheckout: Displays l'address de deposit + QR code + polling du statut
+ * ReleaseFundsButton: Bouton "Release the Funds" pour le buyer apres reception
+ * OrderPaymentStatus: Statut de payment en temps reel
  */
 
 // ============================================================
-// QR CODE GENERATOR (sans dépendance externe)
+// QR CODE GENERATOR (sans dependance externe)
 // Utilise l'API QR code de Google Charts (fonctionne sur Tor)
 // ============================================================
 function MoneroQRCode({ address, amount, size = 200 }) {
@@ -368,8 +452,8 @@ function MoneroQRCode({ address, amount, size = 200 }) {
     ? `monero:${address}?tx_amount=${amount.toFixed(12)}`
     : `monero:${address}`;
   
-  // QR via API publique (fallback si pas de lib)
-  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&data=${encodeURIComponent(uri)}&bgcolor=1a1a2e&color=f97316&format=png`;
+  // QR generated locally by backend (offline, no third-party service)
+  const qrUrl = `/api/qr/monero?uri=${encodeURIComponent(uri)}&size=${size}`;
   
   return (
     <div style={{
@@ -385,17 +469,9 @@ function MoneroQRCode({ address, amount, size = 200 }) {
         borderRadius: '12px',
         display: 'inline-block'
       }}>
-        <img 
-          src={qrUrl} 
-          alt="Monero QR Code"
-          width={size}
-          height={size}
-          style={{ display: 'block', borderRadius: '4px' }}
-          onError={(e) => {
-            // Fallback: afficher l'adresse en texte si QR échoue
-            e.target.style.display = 'none';
-          }}
-        />
+        {qrUrl ? (
+          <AuthenticatedMoneroQrImg srcPathWithQuery={qrUrl} size={size} alt="Monero QR Code" />
+        ) : null}
       </div>
       <span style={{ fontSize: '11px', color: '#888', fontFamily: 'monospace' }}>
         Scan with Monero wallet
@@ -497,7 +573,7 @@ function ConfirmationProgress({ confirmations, required = 10 }) {
 
 // ============================================================
 // MONERO CHECKOUT MODAL
-// Affiché après création d'une commande
+// Shown apres creation d'une order
 // ============================================================
 function MoneroCheckout({ order, onClose, onPaymentConfirmed }) {
   const [paymentStatus, setPaymentStatus] = React.useState({
@@ -513,13 +589,13 @@ function MoneroCheckout({ order, onClose, onPaymentConfirmed }) {
   const amountXmr = order?.amount_xmr || 0;
   const orderId = order?.order_id || order?.id;
   
-  // Polling du statut de paiement toutes les 15 secondes
+  // Polling du statut de payment toutes les 15 secondes
   React.useEffect(() => {
     if (!orderId || !polling) return;
     
     const poll = async () => {
       try {
-        const resp = await fetch(`http://localhost:5000/api/order/${orderId}/payment`);
+        const resp = await fetch(`/api/order/${orderId}/payment`);
         if (resp.ok) {
           const data = await resp.json();
           setPaymentStatus(data);
@@ -534,7 +610,7 @@ function MoneroCheckout({ order, onClose, onPaymentConfirmed }) {
       }
     };
     
-    poll(); // Immédiat
+    poll(); // Immediat
     const interval = setInterval(poll, 15000); // Toutes les 15s
     return () => clearInterval(interval);
   }, [orderId, polling]);
@@ -622,7 +698,7 @@ function MoneroCheckout({ order, onClose, onPaymentConfirmed }) {
             {amountXmr.toFixed(6)} XMR
           </p>
           <p style={{ color: '#6b7280', margin: '4px 0 0', fontSize: '12px' }}>
-            ⚠️ Send EXACTLY this amount — no more, no less
+            ⚠️ Send EXACTLY this amount - no more, no less
           </p>
         </div>
         
@@ -721,7 +797,7 @@ function MoneroCheckout({ order, onClose, onPaymentConfirmed }) {
 
 // ============================================================
 // RELEASE FUNDS BUTTON
-// Affiché dans la page des commandes du buyer
+// Shown dans la page des orders du buyer
 // ============================================================
 function ReleaseFundsButton({ order, currentUser, onReleased }) {
   const [loading, setLoading] = React.useState(false);
@@ -768,9 +844,15 @@ function ReleaseFundsButton({ order, currentUser, onReleased }) {
     setError(null);
     
     try {
+      const sessionData = JSON.parse(localStorage.getItem('silkGenesis_session') || '{}');
+      const token = sessionData.session_token;
+      
       const resp = await fetch(`/api/orders/${orderId}/release`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
         body: JSON.stringify({ buyer_username: currentUser })
       });
       
@@ -932,7 +1014,7 @@ function ReleaseFundsButton({ order, currentUser, onReleased }) {
 
 // ============================================================
 // ORDER PAYMENT STATUS CARD
-// Affiché dans la liste des commandes
+// Shown dans la liste des orders
 // ============================================================
 function OrderPaymentStatus({ order }) {
   const depositAddress = order?.deposit_address;
@@ -1004,7 +1086,7 @@ function PGPPrivateKeyModal({ isOpen, onClose, pgpData }) {
           <div className="w-10 h-10 bg-red-900/20 border border-red-600/40 rounded-xl flex items-center justify-center text-xl">🔐</div>
           <div>
             <h2 className="text-red-400 text-xl font-black uppercase">⚠️ SAVE YOUR PRIVATE KEY</h2>
-            <p className="text-[10px] text-red-700 uppercase tracking-widest">This is shown ONCE — Never again</p>
+            <p className="text-[10px] text-red-700 uppercase tracking-widest">This is shown ONCE - Never again</p>
           </div>
         </div>
 
@@ -1061,7 +1143,7 @@ function PGPPrivateKeyModal({ isOpen, onClose, pgpData }) {
           onClick={onClose}
           disabled={!confirmed}
           className={`w-full py-4 rounded-xl font-black uppercase text-[12px] transition-all ${confirmed ? 'bg-amber-600 text-black hover:bg-amber-500' : 'bg-gray-900 text-gray-700 cursor-not-allowed'}`}>
-          {confirmed ? '✓ I Have Saved My Key — Enter Market' : 'Check the box above to continue'}
+          {confirmed ? '✓ I Have Saved My Key - Enter Market' : 'Check the box above to continue'}
         </button>
       </div>
     </div>
@@ -1071,7 +1153,7 @@ function PGPPrivateKeyModal({ isOpen, onClose, pgpData }) {
 // ============================================================
 // PGP KEY SECTION - In user profile
 // ============================================================
-function PGPKeySection({ user }) {
+function PGPKeySection({ user, onSetupComplete, currentToken, onSessionExpired }) {
   const [pgpData, setPgpData] = React.useState(null);
   const [showPrivateKey, setShowPrivateKey] = React.useState(false);
   const [privateKeyData, setPrivateKeyData] = React.useState(null);
@@ -1081,29 +1163,117 @@ function PGPKeySection({ user }) {
   const [saveStatus, setSaveStatus] = React.useState('');
   const [copiedPub, setCopiedPub] = React.useState(false);
   const [copiedFp, setCopiedFp] = React.useState(false);
+  const [setupPassword, setSetupPassword] = React.useState('');
+  const [setupLoading, setSetupLoading] = React.useState(false);
+  const [setupStatus, setSetupStatus] = React.useState('');
+  const [showAdvancedImport, setShowAdvancedImport] = React.useState(false);
+  const [autoDecryptKey, setAutoDecryptKey] = React.useState('');
+  const [autoDecryptPassphrase, setAutoDecryptPassphrase] = React.useState('');
+  const [autoDecryptStatus, setAutoDecryptStatus] = React.useState('');
 
-  React.useEffect(() => { loadPGPData(); }, [user.username]);
+  const getSessionToken = () => {
+    if (currentToken) return currentToken;
+    try {
+      const sessionData = JSON.parse(localStorage.getItem('silkGenesis_session') || '{}');
+      return sessionData.session_token || '';
+    } catch {
+      return '';
+    }
+  };
 
-  const loadPGPData = async () => {
+  const handleSessionExpired = () => {
+    if (onSessionExpired) {
+      onSessionExpired();
+      return;
+    }
+    localStorage.removeItem('silkGenesis_session');
+    alert('Session expired. Please login again.');
+    window.location.reload();
+  };
+
+  const loadPGPData = React.useCallback(async () => {
     try {
       const res = await fetch('/api/pgp/' + user.username);
-      if (res.ok) setPgpData(await res.json());
+      if (res.ok) {
+        const data = await res.json();
+        setPgpData(data);
+        if (data?.pgp_setup_completed && onSetupComplete) {
+          onSetupComplete();
+        }
+      }
     } catch(e) {}
-  };
+  }, [user.username, onSetupComplete]);
+
+  React.useEffect(() => { loadPGPData(); }, [loadPGPData]);
 
   const fetchPrivateKey = async () => {
     if (!password) { alert('Enter your password to retrieve your private key'); return; }
     try {
-      const res = await fetch('/api/pgp/' + user.username + '/private?password=' + encodeURIComponent(password));
+      const token = getSessionToken();
+      const res = await fetch('/api/pgp/' + user.username + '/private?password=' + encodeURIComponent(password), {
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      });
       const data = await res.json();
       if (res.ok && data.pgp_private_key_encrypted) {
         setPrivateKeyData(data);
         setShowPrivateKey(true);
         setPassword('');
       } else {
-        alert(data.detail || 'Error retrieving private key');
+        if (data?.detail === 'SESSION_TOKEN_REQUIRED' || data?.detail === 'INVALID_SESSION') {
+          handleSessionExpired();
+          return;
+        }
+        if (data?.detail === 'PGP_PRIVATE_KEY_ALREADY_VIEWED') {
+          alert('Private key retrieval is disabled after one-time setup.');
+        } else {
+          alert(data.detail || 'Error retrieving private key');
+        }
       }
     } catch(e) { alert('Connection error'); }
+  };
+
+  const runMandatorySetup = async () => {
+    if (!setupPassword) {
+      setSetupStatus('❌ Enter your account password.');
+      return;
+    }
+    setSetupLoading(true);
+    setSetupStatus('');
+    try {
+      const token = getSessionToken();
+      const res = await fetch('/api/pgp/setup', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({ username: user.username, password: setupPassword })
+      });
+      const data = await res.json();
+      if (res.ok && data.status === 'success') {
+        setSetupStatus('✅ PGP setup completed. Save your private key now.');
+        setPrivateKeyData(data);
+        setShowPrivateKey(true);
+        if (data?.pgp_private_key_encrypted && setupPassword) {
+          sessionStorage.setItem('silkGenesis_pgp_private_key', data.pgp_private_key_encrypted);
+          sessionStorage.setItem('silkGenesis_pgp_passphrase', setupPassword);
+          setAutoDecryptStatus('✅ Auto-decrypt enabled for this session.');
+        }
+        setSetupPassword('');
+        if (onSetupComplete) onSetupComplete();
+        loadPGPData();
+      } else {
+        if (data?.detail === 'SESSION_TOKEN_REQUIRED' || data?.detail === 'INVALID_SESSION') {
+          handleSessionExpired();
+          return;
+        }
+        setSetupStatus('❌ ' + (data.detail || data.message || 'Setup failed'));
+      }
+    } catch (e) {
+      setSetupStatus('❌ Connection error');
+    } finally {
+      setSetupLoading(false);
+    }
   };
 
   const savePubKey = async () => {
@@ -1124,7 +1294,10 @@ function PGPKeySection({ user }) {
       }
       const res = await fetch('/api/pgp/set', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
+        headers: {
+          'Content-Type': 'application/json',
+          ...(getSessionToken() ? { 'Authorization': `Bearer ${getSessionToken()}` } : {})
+        },
         body: JSON.stringify({ username: user.username, pgp_key: newPubKey })
       });
       const data = await res.json();
@@ -1142,7 +1315,40 @@ function PGPKeySection({ user }) {
     }
   };
 
+  const enableAutoDecrypt = async () => {
+    if (!autoDecryptKey.trim()) {
+      setAutoDecryptStatus('❌ Paste your private key first.');
+      return;
+    }
+    if (!autoDecryptPassphrase.trim()) {
+      setAutoDecryptStatus('❌ Enter your account password/passphrase.');
+      return;
+    }
+    try {
+      if (!window.openpgp) {
+        setAutoDecryptStatus('❌ OpenPGP library not loaded. Refresh the page to load crypto dependencies.');
+        return;
+      }
+      const privKeyObj = await window.openpgp.readPrivateKey({ armoredKey: autoDecryptKey });
+      await window.openpgp.decryptKey({ privateKey: privKeyObj, passphrase: autoDecryptPassphrase });
+      sessionStorage.setItem('silkGenesis_pgp_private_key', autoDecryptKey);
+      sessionStorage.setItem('silkGenesis_pgp_passphrase', autoDecryptPassphrase);
+      setAutoDecryptStatus('✅ Auto-decrypt enabled for this session.');
+    } catch (e) {
+      setAutoDecryptStatus(`❌ Invalid key or passphrase: ${e.message}`);
+    }
+  };
+
+  const disableAutoDecrypt = () => {
+    sessionStorage.removeItem('silkGenesis_pgp_private_key');
+    sessionStorage.removeItem('silkGenesis_pgp_passphrase');
+    setAutoDecryptStatus('✅ Auto-decrypt disabled.');
+  };
+
   const hasPGP = pgpData && pgpData.has_pgp;
+  const requiresMandatorySetup = user?.role !== 'admin' && !pgpData?.pgp_setup_completed;
+  const setupCompleted = !!pgpData?.pgp_setup_completed;
+  const keyAlgorithmLabel = (pgpData?.pgp_public_key || pgpData?.pgp_key || '').includes('Ed25519') ? 'Ed25519' : 'RSA';
 
   return (
     <div className="bg-[#111] border border-amber-900/20 rounded-3xl p-8 shadow-2xl space-y-6">
@@ -1155,7 +1361,101 @@ function PGPKeySection({ user }) {
         </div>
       </div>
 
-      {hasPGP && pgpData && (
+      <div className={`rounded-xl p-4 border ${requiresMandatorySetup ? 'bg-red-900/10 border-red-600/30' : 'bg-green-900/10 border-green-600/30'}`}>
+        {requiresMandatorySetup ? (
+          <>
+            <p className="text-red-300 text-[11px] font-black uppercase mb-2">Quick setup required to unlock messaging</p>
+            <p className="text-[10px] text-gray-200">
+              One-time setup only: type your account password, click setup, then copy and store your private key.
+            </p>
+          </>
+        ) : (
+          <>
+            <p className="text-green-300 text-[11px] font-black uppercase mb-2">PGP ready</p>
+            <p className="text-[10px] text-gray-200">
+              Your encrypted messaging identity is active. You can copy your fingerprint/public key below anytime.
+            </p>
+          </>
+        )}
+      </div>
+
+      <div className="bg-black/40 border border-cyan-900/30 p-4 rounded-xl space-y-3">
+        <p className="text-cyan-300 text-[10px] font-black uppercase">Auto decrypt for chat (buyer/vendor)</p>
+        <p className="text-[10px] text-gray-400">
+          Enable once per session to decrypt incoming PGP messages automatically in chat.
+        </p>
+        <textarea
+          value={autoDecryptKey}
+          onChange={e => setAutoDecryptKey(e.target.value)}
+          placeholder={"-----BEGIN PGP PRIVATE KEY BLOCK-----\n...\n-----END PGP PRIVATE KEY BLOCK-----"}
+          rows={4}
+          className="w-full bg-black border border-cyan-900/30 p-3 rounded-xl text-[10px] text-cyan-300 font-mono outline-none resize-none"
+        />
+        <div className="flex gap-3">
+          <input
+            type="password"
+            value={autoDecryptPassphrase}
+            onChange={e => setAutoDecryptPassphrase(e.target.value)}
+            placeholder="Account password / key passphrase"
+            className="flex-1 bg-black border border-cyan-900/30 p-3 rounded-xl text-[11px] text-cyan-200 outline-none font-mono"
+          />
+          <button
+            onClick={enableAutoDecrypt}
+            className="px-4 py-3 bg-cyan-900/20 border border-cyan-600/40 text-cyan-300 rounded-xl text-[10px] font-black hover:bg-cyan-600 hover:text-black transition-all"
+          >
+            Enable Auto
+          </button>
+          <button
+            onClick={disableAutoDecrypt}
+            className="px-4 py-3 bg-gray-900 border border-white/10 text-gray-300 rounded-xl text-[10px] font-black hover:bg-white/10 transition-all"
+          >
+            Disable
+          </button>
+        </div>
+        {autoDecryptStatus && (
+          <p className={`text-[10px] font-mono ${autoDecryptStatus.startsWith('✅') ? 'text-green-400' : 'text-red-400'}`}>
+            {autoDecryptStatus}
+          </p>
+        )}
+      </div>
+
+      {requiresMandatorySetup && (
+        <div className="bg-red-900/10 border border-red-600/30 p-5 rounded-xl space-y-4">
+          <div>
+            <p className="text-red-400 text-[11px] font-black mb-2 uppercase">Mandatory PGP setup required</p>
+            <p className="text-[10px] text-gray-300">
+              Messaging is locked until setup is done once. Steps: enter your account password, click setup, then save your private key safely.
+            </p>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-[10px]">
+            <div className="bg-black/50 border border-white/10 rounded-lg p-2 text-gray-300">1. Confirm password</div>
+            <div className="bg-black/50 border border-white/10 rounded-lg p-2 text-gray-300">2. Generate keys</div>
+            <div className="bg-black/50 border border-white/10 rounded-lg p-2 text-gray-300">3. Save private key</div>
+          </div>
+          <div className="flex gap-3">
+            <input
+              type="password"
+              value={setupPassword}
+              onChange={e => setSetupPassword(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && runMandatorySetup()}
+              placeholder="Your account password"
+              className="flex-1 bg-black border border-red-900/30 p-3 rounded-xl text-[11px] text-red-200 outline-none font-mono"
+            />
+            <button
+              onClick={runMandatorySetup}
+              disabled={setupLoading}
+              className="px-4 py-3 bg-red-900/20 border border-red-600/40 text-red-400 rounded-xl text-[10px] font-black hover:bg-red-600 hover:text-black transition-all disabled:opacity-50"
+            >
+              {setupLoading ? '⏳ Setting up...' : 'Setup secure messaging now'}
+            </button>
+          </div>
+          {setupStatus && (
+            <p className={`text-[10px] mt-2 font-mono ${setupStatus.startsWith('✅') ? 'text-green-400' : 'text-red-400'}`}>{setupStatus}</p>
+          )}
+        </div>
+      )}
+
+      {(hasPGP || setupCompleted) && pgpData && (
         <div className="space-y-4">
           {pgpData.pgp_fingerprint && (
             <div className="bg-black/60 border border-amber-900/20 p-4 rounded-xl">
@@ -1167,6 +1467,7 @@ function PGPKeySection({ user }) {
                 </button>
               </div>
               <code className="text-amber-500 text-[10px] font-mono tracking-wider break-all">{pgpData.pgp_fingerprint}</code>
+              <p className="text-[9px] text-gray-500 mt-2">Algorithm: {keyAlgorithmLabel}</p>
             </div>
           )}
 
@@ -1208,6 +1509,9 @@ function PGPKeySection({ user }) {
               <textarea readOnly value={privateKeyData.pgp_private_key_encrypted || ''} rows={8}
                 className="w-full bg-transparent text-[9px] text-red-300 font-mono outline-none resize-none"/>
               <p className="text-[9px] text-gray-600 mt-2 italic">Protected by your account password (AES-256). The server cannot decrypt this.</p>
+              <p className="text-[9px] text-gray-500 mt-1">
+                Short private key length is normal when algorithm is Ed25519. It is modern and secure.
+              </p>
               <button onClick={() => setShowPrivateKey(false)} className="mt-2 text-[9px] text-gray-600 hover:text-gray-400">Hide</button>
             </div>
           )}
@@ -1225,22 +1529,32 @@ function PGPKeySection({ user }) {
       )}
 
       <div className="border-t border-white/5 pt-6">
-        <p className="text-[9px] text-gray-500 uppercase mb-3">
-          {hasPGP ? 'Update Public Key (import external key)' : 'Import External PGP Public Key'}
-        </p>
-        <textarea
-          value={newPubKey}
-          onChange={e => setNewPubKey(e.target.value)}
-          placeholder={"-----BEGIN PGP PUBLIC KEY BLOCK-----\n...\n-----END PGP PUBLIC KEY BLOCK-----"}
-          rows={5}
-          className="w-full bg-black border border-amber-900/30 p-4 rounded-xl text-[10px] text-amber-400 font-mono outline-none resize-none mb-3"
-        />
-        <button onClick={savePubKey} disabled={validating || !newPubKey.trim()}
-          className={`w-full py-3 rounded-xl font-black text-[11px] uppercase transition-all ${validating ? 'bg-gray-900 text-gray-600' : newPubKey.trim() ? 'bg-amber-600 text-black hover:bg-amber-500' : 'bg-gray-900 text-gray-700 cursor-not-allowed'}`}>
-          {validating ? '⏳ Validating...' : '✓ Save Public Key'}
+        <button
+          onClick={() => setShowAdvancedImport(prev => !prev)}
+          className="w-full py-3 border border-amber-900/30 rounded-xl text-[10px] text-amber-300 hover:bg-amber-900/10 transition-all"
+        >
+          {showAdvancedImport ? 'Hide advanced key import' : 'Advanced: import external public key'}
         </button>
-        {saveStatus && (
-          <p className={`text-[10px] mt-2 font-mono ${saveStatus.startsWith('✅') ? 'text-green-400' : 'text-red-400'}`}>{saveStatus}</p>
+        {showAdvancedImport && (
+          <div className="mt-3">
+            <p className="text-[9px] text-gray-500 uppercase mb-3">
+              {hasPGP ? 'Update Public Key (import external key)' : 'Import External PGP Public Key'}
+            </p>
+            <textarea
+              value={newPubKey}
+              onChange={e => setNewPubKey(e.target.value)}
+              placeholder={"-----BEGIN PGP PUBLIC KEY BLOCK-----\n...\n-----END PGP PUBLIC KEY BLOCK-----"}
+              rows={5}
+              className="w-full bg-black border border-amber-900/30 p-4 rounded-xl text-[10px] text-amber-400 font-mono outline-none resize-none mb-3"
+            />
+            <button onClick={savePubKey} disabled={validating || !newPubKey.trim()}
+              className={`w-full py-3 rounded-xl font-black text-[11px] uppercase transition-all ${validating ? 'bg-gray-900 text-gray-600' : newPubKey.trim() ? 'bg-amber-600 text-black hover:bg-amber-500' : 'bg-gray-900 text-gray-700 cursor-not-allowed'}`}>
+              {validating ? '⏳ Validating...' : '✓ Save Public Key'}
+            </button>
+            {saveStatus && (
+              <p className={`text-[10px] mt-2 font-mono ${saveStatus.startsWith('✅') ? 'text-green-400' : 'text-red-400'}`}>{saveStatus}</p>
+            )}
+          </div>
         )}
       </div>
     </div>
@@ -1260,6 +1574,27 @@ function EncryptedMessageBubble({ msg, currentUser, isOwn }) {
 
   const isEncrypted = msg.encrypted && msg.message && msg.message.includes('-----BEGIN PGP MESSAGE-----');
 
+  React.useEffect(() => {
+    const autoDecrypt = async () => {
+      if (!isEncrypted || decrypted) return;
+      try {
+        const storedKey = sessionStorage.getItem('silkGenesis_pgp_private_key') || '';
+        const storedPass = sessionStorage.getItem('silkGenesis_pgp_passphrase') || '';
+        if (!storedKey || !window.openpgp) return;
+        const privKeyObj = await window.openpgp.readPrivateKey({ armoredKey: storedKey });
+        const unlockedKey = storedPass
+          ? await window.openpgp.decryptKey({ privateKey: privKeyObj, passphrase: storedPass })
+          : privKeyObj;
+        const message = await window.openpgp.readMessage({ armoredMessage: msg.message });
+        const { data } = await window.openpgp.decrypt({ message, decryptionKeys: unlockedKey });
+        setDecrypted(data);
+      } catch {
+        // Silent fail: manual decrypt remains available.
+      }
+    };
+    autoDecrypt();
+  }, [isEncrypted, msg.message, decrypted]);
+
   const decryptLocally = async () => {
     if (!privateKey.trim()) { setDecryptError('Paste your private key'); return; }
     setDecrypting(true);
@@ -1275,7 +1610,7 @@ function EncryptedMessageBubble({ msg, currentUser, isOwn }) {
         setDecrypted(data);
         setShowDecryptModal(false);
       } else {
-        setDecryptError('OpenPGP.js not loaded. Copy the message and decrypt with GPG:\ngpg --decrypt');
+        setDecryptError('OpenPGP library not loaded. Refresh page and try again.');
       }
     } catch(e) {
       setDecryptError('Decryption failed: ' + e.message);
@@ -1384,7 +1719,7 @@ function EncryptedMessageBubble({ msg, currentUser, isOwn }) {
 // ============================================================
 // GENERAL CHAT MODAL
 // ============================================================
-function GeneralChatModal({ isOpen, onClose, buyer, vendor, currentUser }) {
+function GeneralChatModal({ isOpen, onClose, buyer, vendor, currentUser, currentToken, authFetch }) {
   const [messages, setMessages] = useState([]);
   const [newMsg, setNewMsg] = useState('');
   const chatKey = `${buyer}_${vendor}`;
@@ -1408,11 +1743,28 @@ function GeneralChatModal({ isOpen, onClose, buyer, vendor, currentUser }) {
   const sendMessage = async () => {
     if (!newMsg.trim()) return;
     try {
-      await fetch('/api/chat/general', {
+      const res = await (authFetch || fetch)('/api/chat/general', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ buyer, vendor, sender: currentUser, message: newMsg, encrypted: false })
       });
+      const data = await res.json();
+      if (!res.ok) {
+        if (data?.detail === 'PGP_SETUP_REQUIRED') {
+          alert('Mandatory PGP setup is required for both users before chat. Complete setup in Identity.');
+          return;
+        }
+        if (data?.detail === 'PGP_REQUIRED_FOR_CHAT') {
+          alert('PGP key required for both users. Chat is blocked until both parties set a PGP key in Profile.');
+          return;
+        }
+        if (data?.detail === 'SESSION_TOKEN_REQUIRED' || data?.detail === 'INVALID_SESSION') {
+          alert('Session expired. Please log in again.');
+          return;
+        }
+        alert(`Chat error: ${data?.detail || 'SEND_FAILED'}`);
+        return;
+      }
       setNewMsg('');
       loadMessages();
     } catch (e) { console.error("Error sending message:", e); }
@@ -1460,7 +1812,7 @@ function GeneralChatModal({ isOpen, onClose, buyer, vendor, currentUser }) {
 // ============================================================
 // ORDER CHAT MODAL
 // ============================================================
-function OrderChatModal({ isOpen, onClose, orderId, currentUser }) {
+function OrderChatModal({ isOpen, onClose, orderId, currentUser, currentToken, authFetch }) {
   const [messages, setMessages] = useState([]);
   const [newMsg, setNewMsg] = useState('');
 
@@ -1483,11 +1835,28 @@ function OrderChatModal({ isOpen, onClose, orderId, currentUser }) {
   const sendMessage = async () => {
     if (!newMsg.trim()) return;
     try {
-      await fetch('/api/chat/order', {
+      const res = await (authFetch || fetch)('/api/chat/order', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ order_id: orderId, sender: currentUser, message: newMsg })
       });
+      const data = await res.json();
+      if (!res.ok) {
+        if (data?.detail === 'PGP_SETUP_REQUIRED') {
+          alert('Mandatory PGP setup is required for both users before order chat. Complete setup in Identity.');
+          return;
+        }
+        if (data?.detail === 'PGP_REQUIRED_FOR_CHAT') {
+          alert('PGP key required for both users. Order chat is blocked until both parties set a PGP key.');
+          return;
+        }
+        if (data?.detail === 'SESSION_TOKEN_REQUIRED' || data?.detail === 'INVALID_SESSION') {
+          alert('Session expired. Please log in again.');
+          return;
+        }
+        alert(`Chat error: ${data?.detail || 'SEND_FAILED'}`);
+        return;
+      }
       setNewMsg('');
       loadMessages();
     } catch (e) { console.error("Error sending message:", e); }
@@ -1529,6 +1898,44 @@ function OrderChatModal({ isOpen, onClose, orderId, currentUser }) {
   );
 }
 
+function FounderVendorBadge({ compact = false }) {
+  return (
+    <span
+      className="inline-flex items-center align-middle"
+      title="SilkGenesis Founder Vendor — early verified vendor"
+    >
+      <span
+        className={`relative isolate inline-flex items-center gap-2 rounded-full border border-amber-200/50 bg-gradient-to-b from-zinc-900 via-black to-zinc-950 text-amber-100 shadow-[0_0_0_1px_rgba(0,0,0,0.75),inset_0_1px_0_rgba(255,255,255,0.07),0_0_28px_rgba(234,179,8,0.18),0_8px_28px_rgba(0,0,0,0.55)] ${
+          compact ? 'px-2.5 py-1' : 'px-4 py-2'
+        }`}
+      >
+        <span
+          className="pointer-events-none absolute inset-0 rounded-full bg-gradient-to-r from-amber-400/25 via-yellow-200/12 to-amber-500/20 opacity-90 blur-[10px] -z-10"
+          aria-hidden
+        />
+        <span className="relative z-[1] inline-flex items-center gap-2">
+          <Crown
+            size={compact ? 12 : 14}
+            strokeWidth={2.25}
+            className="shrink-0 text-amber-300 drop-shadow-[0_0_8px_rgba(251,191,36,0.55)]"
+          />
+          <span
+            className={`font-black uppercase tracking-[0.28em] leading-none bg-gradient-to-b from-amber-50 via-amber-200 to-amber-600 bg-clip-text text-transparent ${
+              compact ? 'text-[8px]' : 'text-[10px]'
+            }`}
+          >
+            {compact ? 'Founder' : (
+              <>
+                Founder<span className="mx-1.5 text-amber-400/80 font-light tracking-normal">·</span>Vendor
+              </>
+            )}
+          </span>
+        </span>
+      </span>
+    </span>
+  );
+}
+
 // ============================================================
 // VENDOR PROFILE PAGE
 // ============================================================
@@ -1536,6 +1943,7 @@ function VendorProfilePage({ vendorName, products, onBack, onViewProduct }) {
   const [reviews, setReviews] = useState([]);
   const [avgRating, setAvgRating] = useState(0);
   const [totalReviews, setTotalReviews] = useState(0);
+  const [vendorBadge, setVendorBadge] = useState(null);
   const vendorProducts = products.filter(p => p.vendor === vendorName);
   const totalSales = vendorProducts.reduce((sum, p) => sum + (p.sales || 0), 0);
 
@@ -1554,6 +1962,23 @@ function VendorProfilePage({ vendorName, products, onBack, onViewProduct }) {
     loadReviews();
   }, [vendorName]);
 
+  useEffect(() => {
+    const loadVendorBadge = async () => {
+      try {
+        const res = await fetch(`/api/vendor/${vendorName}/badge`);
+        if (!res.ok) {
+          setVendorBadge(null);
+          return;
+        }
+        const data = await res.json();
+        setVendorBadge(data);
+      } catch {
+        setVendorBadge(null);
+      }
+    };
+    loadVendorBadge();
+  }, [vendorName]);
+
   return (
     <div className="animate-in fade-in duration-500">
       <button onClick={onBack} className="mb-6 flex items-center gap-2 text-amber-500 hover:text-amber-400 transition-all text-sm font-black uppercase">
@@ -1565,7 +1990,12 @@ function VendorProfilePage({ vendorName, products, onBack, onViewProduct }) {
             {vendorName[0]}
           </div>
           <div className="flex-1">
-            <h1 className="text-4xl font-black text-white mb-2">{vendorName}</h1>
+            <h1 className="text-4xl font-black text-white mb-2 flex items-center gap-3">
+              <span>{vendorName}</span>
+              {vendorBadge?.founder_vendor_badge && (
+                <FounderVendorBadge />
+              )}
+            </h1>
             <div className="flex items-center gap-6 text-sm">
               <div className="flex items-center gap-2">
                 <Star size={16} className="fill-amber-500 text-amber-500"/>
@@ -1630,6 +2060,11 @@ function VendorProfilePage({ vendorName, products, onBack, onViewProduct }) {
 // ============================================================
 function ProductDetailPage({ product, user, onBack, onBuy, onContactVendor, onViewVendor, xmrRate = 352 }) {
   const [vendorStats, setVendorStats] = useState({ positive: 0, negative: 0 });
+  const [escrowMode, setEscrowMode] = useState((parseFloat(product?.price_xmr || 0) >= 0.5) ? 'multisig' : 'standard');
+
+  useEffect(() => {
+    setEscrowMode((parseFloat(product?.price_xmr || 0) >= 0.5) ? 'multisig' : 'standard');
+  }, [product?.id, product?.price_xmr]);
 
   useEffect(() => {
     const loadVendorStats = async () => {
@@ -1690,9 +2125,26 @@ function ProductDetailPage({ product, user, onBack, onBuy, onContactVendor, onVi
               <button onClick={onContactVendor} className="flex-1 bg-white/5 border border-amber-900/40 text-amber-500 py-4 rounded-xl font-black hover:bg-amber-900/10 transition-all flex items-center justify-center gap-2 text-sm uppercase">
                 <MessageSquare size={18}/> Contact Vendor
               </button>
-              <button onClick={onBuy} className="flex-1 bg-amber-600 text-black py-4 rounded-xl font-black hover:bg-amber-500 transition-all flex items-center justify-center gap-2 text-sm uppercase">
+              <button onClick={() => onBuy && onBuy(escrowMode)} className="flex-1 bg-amber-600 text-black py-4 rounded-xl font-black hover:bg-amber-500 transition-all flex items-center justify-center gap-2 text-sm uppercase">
                 <ShieldCheck size={18}/> Buy Now
               </button>
+            </div>
+            <div className="bg-black/40 border border-white/10 p-4 rounded-xl">
+              <p className="text-[10px] text-gray-500 uppercase mb-2">Escrow Mode</p>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setEscrowMode('standard')}
+                  className={`px-3 py-2 rounded-lg text-[10px] font-black uppercase transition-all ${escrowMode === 'standard' ? 'bg-amber-900/30 border border-amber-600 text-amber-400' : 'bg-white/5 border border-white/10 text-gray-500 hover:text-gray-300'}`}
+                >
+                  Standard (Fast)
+                </button>
+                <button
+                  onClick={() => setEscrowMode('multisig')}
+                  className={`px-3 py-2 rounded-lg text-[10px] font-black uppercase transition-all ${escrowMode === 'multisig' ? 'bg-purple-900/30 border border-purple-600 text-purple-300' : 'bg-white/5 border border-white/10 text-gray-500 hover:text-gray-300'}`}
+                >
+                  Multisig 2/3 (Safer)
+                </button>
+              </div>
             </div>
             <div className="bg-amber-900/10 border border-amber-900/20 p-4 rounded-xl">
               <p className="text-[9px] text-amber-600 uppercase mb-2">⚠️ Security Notice:</p>
@@ -1757,7 +2209,7 @@ function MnemonicViewer({ user }) {
         </div>
         <div>
           <h3 className="text-white font-black text-lg">Master Wallet Seed Phrase</h3>
-          <p className="text-[10px] text-red-400 uppercase font-black">⚠️ CRITICAL — Admin Only</p>
+          <p className="text-[10px] text-red-400 uppercase font-black">⚠️ CRITICAL - Admin Only</p>
         </div>
       </div>
 
@@ -1765,7 +2217,7 @@ function MnemonicViewer({ user }) {
         <p className="text-red-400 text-xs font-bold mb-1">⚠️ SECURITY WARNING</p>
         <ul className="text-[10px] text-red-300/70 space-y-1 list-disc list-inside">
           <li>This phrase gives FULL CONTROL over all marketplace funds</li>
-          <li>Write it down on paper — NEVER store digitally</li>
+          <li>Write it down on paper - NEVER store digitally</li>
           <li>Never share it with anyone, ever</li>
           <li>This action is logged with timestamp</li>
         </ul>
@@ -1824,7 +2276,7 @@ function MnemonicViewer({ user }) {
             </div>
           ) : (
             <div className="bg-black border border-white/10 rounded-xl p-6 text-center">
-              <p className="text-gray-600 text-sm">🔒 Seed phrase hidden — click "Show" to reveal</p>
+              <p className="text-gray-600 text-sm">🔒 Seed phrase hidden - click "Show" to reveal</p>
               <p className="text-[10px] text-gray-700 mt-1">Make sure no one is watching your screen</p>
             </div>
           )}
@@ -1869,12 +2321,12 @@ return (
           <div className="flex items-center gap-4 mb-6">
             <div className="w-1 h-16 bg-amber-600"/>
             <div>
-              <p className="text-amber-600 text-[10px] tracking-[0.5em] uppercase mb-1">Est. 2026 — Rebuilt from Zero</p>
+              <p className="text-amber-600 text-[10px] tracking-[0.5em] uppercase mb-1">Est. 2026 - Rebuilt from Zero</p>
               <h1 className="text-5xl font-black tracking-tighter text-white">SILK<span className="text-amber-500">GENESIS</span></h1>
             </div>
           </div>
           <p className="text-xl text-gray-300 leading-relaxed max-w-2xl italic">
-            "The Renaissance of Liberty — A ground-up reconstruction of the original 2011 vision, 
+            "The Renaissance of Liberty - A ground-up reconstruction of the original 2011 vision, 
             built for the age of surveillance capitalism."
           </p>
         </div>
@@ -1895,7 +2347,7 @@ return (
                 outside the reach of state violence. It was shut down. Then rebuilt. Then shut down again.
               </p>
               <p className="text-gray-300 text-sm leading-relaxed">
-                SilkGenesis is the 2026 reconstruction — not a copy, but an evolution. Built with 
+                SilkGenesis is the 2026 reconstruction - not a copy, but an evolution. Built with 
                 the lessons of every predecessor, hardened against every known attack vector.
               </p>
             </div>
@@ -1923,7 +2375,7 @@ return (
               {
                 icon: "⬡",
                 title: "Full Monero (XMR)",
-                desc: "Every transaction uses Monero — the only cryptocurrency with mandatory privacy. Ring signatures, stealth addresses, RingCT. No optional privacy. No metadata leaks.",
+                desc: "Every transaction uses Monero - the only cryptocurrency with mandatory privacy. Ring signatures, stealth addresses, RingCT. No optional privacy. No metadata leaks.",
                 color: "amber"
               },
               {
@@ -1956,14 +2408,14 @@ return (
           </h2>
           <div className="bg-[#0a0a0a] border border-white/5 rounded-2xl overflow-hidden">
             {[
-              ["Network Layer", "Tor Hidden Service (.onion) — All traffic routed through Tor"],
-              ["Payment Protocol", "Monero (XMR) — RingCT + Stealth Addresses + Ring Signatures"],
+              ["Network Layer", "Tor Hidden Service (.onion) - All traffic routed through Tor"],
+              ["Payment Protocol", "Monero (XMR) - RingCT + Stealth Addresses + Ring Signatures"],
               ["Escrow System", "Multi-signature escrow with 7-day auto-finalization"],
-              ["Data Retention", "Zero — Messages wiped 168h post-completion"],
-              ["Authentication", "2-step: User ID → Anti-Phishing Phrase → Passphrase"],
+              ["Data Retention", "Zero - Messages wiped 168h post-completion"],
+              ["Authentication", "2-step: User ID -> Anti-Phishing Phrase -> Passphrase"],
               ["Encryption", "PGP end-to-end for all vendor-buyer communications"],
               ["Rate Limiting", "Brute-force protection on all auth endpoints"],
-              ["Frontend", "100% local assets — No external CDN, no Google Fonts, no trackers"],
+              ["Frontend", "100% local assets - No external CDN, no Google Fonts, no trackers"],
             ].map(([key, val], i) => (
               <div key={i} className={`flex items-start gap-6 p-4 ${i % 2 === 0 ? 'bg-white/2' : ''} border-b border-white/5 last:border-0`}>
                 <span className="text-amber-600 text-[10px] uppercase font-black w-40 flex-shrink-0">{key}</span>
@@ -2044,12 +2496,12 @@ return (
           <p className="text-gray-700 text-[10px] italic">
             "The only way to deal with an unfree world is to become so absolutely free that your very existence is an act of rebellion."
           </p>
-          <p className="text-gray-800 text-[9px] mt-2">— Albert Camus</p>
+          <p className="text-gray-800 text-[9px] mt-2">- Albert Camus</p>
           <button
             onClick={() => onNavigate && onNavigate('market')}
             className="mt-6 px-8 py-3 bg-amber-600 text-black font-black uppercase text-[11px] rounded-xl hover:bg-amber-500 transition-all"
           >
-            Enter the Market →
+            Enter the Market ->
           </button>
         </div>
       </div>
@@ -2225,7 +2677,7 @@ function OrdersPage({ user, orders, products, onMarkShipped, onComplete, onOpenC
           {/* ACTIONS */}
           <div className="space-y-4">
             <div className="flex gap-4 flex-wrap">
-              {/* VENDEUR: Marquer comme expédié */}
+              {/* VENDOR: Mark as shipped */}
               {user.username === order.vendor && order.status === 'escrow' && (
                 <button onClick={() => onMarkShipped(order.id)}
                   className="flex-1 bg-blue-600 text-black py-4 rounded-xl font-black hover:bg-blue-500 transition-all flex items-center justify-center gap-2 text-sm">
@@ -2252,7 +2704,7 @@ function OrdersPage({ user, orders, products, onMarkShipped, onComplete, onOpenC
                 </button>
               )}
 
-              {/* ACHETEUR: En attente d'expédition */}
+              {/* ACHETEUR: En pending d'shipment */}
               {user.username === order.buyer && order.status === 'escrow' && (
                 <div className="flex-1 bg-yellow-900/10 border border-yellow-900/30 text-yellow-600 py-4 rounded-xl flex items-center justify-center gap-2 text-sm font-black">
                   <Lock size={18}/> Waiting for vendor to ship...
@@ -2310,29 +2762,8 @@ function OrdersPage({ user, orders, products, onMarkShipped, onComplete, onOpenC
 // ============================================================
 // PROFILE PAGE
 // ============================================================
-function ProfilePage({ user, balance, xmrRate, onUpdateAvatar, onUpgrade, onDelete, onWithdraw }) {
+function ProfilePage({ user, onUpdateAvatar, onUpgrade, onDelete }) {
   const [tempImg, setTempImg] = useState(user?.avatar || null);
-  const [wAddr, setWAddr] = useState('');
-  const [wAmt, setWAmt] = useState('');
-  const [profileDepositAddress, setProfileDepositAddress] = useState('');
-
-  useEffect(() => {
-    setProfileDepositAddress('');
-    if (!user?.username) return;
-
-    fetch(`/api/wallet/deposit-address/${user.username}`)
-      .then(r => r.json())
-      .then(d => {
-        if (d?.address && d.address.startsWith('8')) {
-          setProfileDepositAddress(d.address);
-        } else {
-          setProfileDepositAddress('');
-        }
-      })
-      .catch(() => {
-        setProfileDepositAddress('');
-      });
-  }, [user?.username]);
 
   const handleAvatarChange = (e) => {
     const file = e.target.files[0];
@@ -2358,38 +2789,15 @@ function ProfilePage({ user, balance, xmrRate, onUpdateAvatar, onUpgrade, onDele
           </div>
           <div className="flex-1">
             <h2 className="text-5xl font-black text-white tracking-tighter">{user?.username}</h2>
-            <p className="text-amber-500 text-[12px] tracking-[0.4em] mt-2 flex items-center gap-2"><Shield size={14}/> Node Identifier Secured</p>
+            <p className="text-gray-500 text-[11px] normal-case not-italic font-medium tracking-tight mt-2 flex items-center gap-2">
+              <Shield size={14} className="text-amber-600/80 flex-shrink-0" /> Use the <strong className="text-gray-400">2FA</strong> card just below, then PGP, to harden this account.
+            </p>
           </div>
           {user?.role === 'buyer' && (
             <button onClick={onUpgrade} className="bg-amber-600 text-black px-6 py-3 rounded-xl text-[11px] hover:bg-amber-400 transition-all flex items-center gap-2 shadow-xl">
               <Zap size={14}/> Become a Seller ($200)
             </button>
           )}
-        </div>
-        <div className="grid grid-cols-3 gap-1 p-1 bg-amber-900/10 text-center">
-          <div className="bg-[#0a0a0a] p-10"><p className="text-[11px] text-gray-500 mb-2">Trust Level</p><p className="text-2xl text-green-500 italic">99.8%</p></div>
-          <div className="bg-[#0a0a0a] p-10"><p className="text-[11px] text-gray-500 mb-2">Records</p><p className="text-2xl text-white italic">{user?.pos || 142}</p></div>
-          <div className="bg-[#0a0a0a] p-10"><p className="text-[11px] text-gray-500 mb-2">Vault Value</p><p className="text-2xl text-amber-500 italic">${(balance * xmrRate).toFixed(2)}</p></div>
-        </div>
-      </div>
-      <div className="bg-[#111] border border-amber-900/20 rounded-3xl p-8 shadow-2xl">
-        <h3 className="text-amber-500 mb-6 flex items-center gap-2"><DollarSign size={20}/> Cryptographic Deposit Node</h3>
-        <div className="space-y-4">
-          <p className="text-[10px] text-gray-500 italic">Your unique network address for incoming XMR:</p>
-          <div className="bg-black p-4 rounded-xl border border-white/5 flex items-center justify-between group">
-            <code className="text-[11px] text-amber-600 break-all font-mono">{profileDepositAddress || "SUBADDRESS UNAVAILABLE (RPC OFFLINE)"}</code>
-            <button onClick={() => {navigator.clipboard.writeText(profileDepositAddress || ''); alert("COPIED");}} className="ml-4 p-2 bg-amber-900/20 text-amber-500 rounded hover:bg-amber-600 hover:text-black transition-all"><Copy size={14}/></button>
-          </div>
-        </div>
-      </div>
-      <div className="bg-[#111] border border-red-900/20 rounded-3xl p-8 shadow-2xl">
-        <h3 className="text-red-500 mb-6 flex items-center gap-2"><ArrowUpCircle size={20}/> Outbound Fund Transfer</h3>
-        <div className="space-y-4">
-          <input type="text" placeholder="EXTERNAL XMR ADDRESS" value={wAddr} onChange={e=>setWAddr(e.target.value)} className="w-full bg-black border border-white/10 p-4 rounded-xl text-[11px] text-amber-500 outline-none font-mono"/>
-          <div className="flex gap-4">
-            <input type="number" placeholder="AMOUNT" value={wAmt} onChange={e=>setWAmt(e.target.value)} className="flex-1 bg-black border border-white/10 p-4 rounded-xl text-[11px] text-amber-500 font-mono"/>
-            <button onClick={() => onWithdraw(wAddr, parseFloat(wAmt))} className="bg-red-600 text-black px-8 rounded-xl font-black uppercase text-[11px] hover:bg-red-500">Execute</button>
-          </div>
         </div>
       </div>
       <div className="flex justify-end">
@@ -2401,17 +2809,162 @@ function ProfilePage({ user, balance, xmrRate, onUpdateAvatar, onUpgrade, onDele
   );
 }
 
+function WalletPage({ user, onWithdraw, authenticatedFetch, balance, xmrRate }) {
+  const [wAddr, setWAddr] = useState('');
+  const [wAmt, setWAmt] = useState('');
+  const [profileDepositAddress, setProfileDepositAddress] = useState('');
+  const [recentWithdrawals, setRecentWithdrawals] = useState([]);
+  const [recentDeposits, setRecentDeposits] = useState([]);
+
+  const getSessionToken = () => {
+    try {
+      const raw = localStorage.getItem('silkGenesis_session');
+      if (!raw) return '';
+      const parsed = JSON.parse(raw);
+      return parsed.session_token || '';
+    } catch {
+      return '';
+    }
+  };
+
+  useEffect(() => {
+    setProfileDepositAddress('');
+    if (!user?.username) return;
+    const token = getSessionToken();
+    fetch(`/api/wallet/deposit-address/${user.username}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {}
+    })
+      .then(r => r.json())
+      .then(d => {
+        if (d?.address && d.address.startsWith('8')) setProfileDepositAddress(d.address);
+        else setProfileDepositAddress('');
+      })
+      .catch(() => setProfileDepositAddress(''));
+  }, [user?.username]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadWalletActivity = async () => {
+      if (!authenticatedFetch || !user?.username) return;
+      try {
+        const [wdRes, depRes] = await Promise.all([
+          authenticatedFetch('/api/withdrawal/history'),
+          authenticatedFetch(`/api/xmr/deposit-diagnostics/${encodeURIComponent(user.username)}`)
+        ]);
+
+        if (!cancelled && wdRes?.ok) {
+          const wdData = await wdRes.json();
+          const allWd = Array.isArray(wdData?.withdrawals) ? wdData.withdrawals : [];
+          setRecentWithdrawals(allWd.slice(0, 5));
+        }
+
+        if (!cancelled && depRes?.ok) {
+          const depData = await depRes.json();
+          const incoming = Array.isArray(depData?.recent_incoming_for_address)
+            ? depData.recent_incoming_for_address
+            : [];
+          setRecentDeposits(incoming.slice(0, 5));
+        }
+      } catch {
+        if (!cancelled) {
+          setRecentWithdrawals([]);
+          setRecentDeposits([]);
+        }
+      }
+    };
+    loadWalletActivity();
+    return () => { cancelled = true; };
+  }, [authenticatedFetch, user?.username]);
+
+  return (
+    <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 font-mono uppercase italic font-black space-y-6">
+      <div className="bg-[#111] border border-emerald-900/20 rounded-3xl p-6 shadow-2xl">
+        <h3 className="text-emerald-500 mb-3 flex items-center gap-2 normal-case not-italic"><Wallet size={18}/> Account balance</h3>
+        <div className="text-[10px] text-gray-500 normal-case not-italic">Estimated USD value</div>
+        <div className="text-sm text-emerald-300">
+          ${(((Number(balance) || 0) * (Number(xmrRate) || 0))).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+        </div>
+        <div className="text-2xl text-amber-500 tracking-tight">
+          {(Number(balance) || 0).toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 })} XMR
+        </div>
+      </div>
+
+      <div className="bg-[#111] border border-amber-900/20 rounded-3xl p-8 shadow-2xl">
+        <h3 className="text-amber-500 mb-2 flex items-center gap-2 normal-case not-italic"><DollarSign size={20}/> Monero deposit address</h3>
+        <p className="text-[10px] text-gray-500 mb-4">Subaddress for incoming XMR. Shown when the market wallet RPC is available.</p>
+        <div className="bg-black p-4 rounded-xl border border-white/5 flex items-center justify-between group">
+          <code className="text-[11px] text-amber-600 break-all font-mono">{profileDepositAddress || "SUBADDRESS UNAVAILABLE (RPC OFFLINE)"}</code>
+          <button onClick={() => { navigator.clipboard.writeText(profileDepositAddress || ''); alert("COPIED"); }} className="ml-4 p-2 bg-amber-900/20 text-amber-500 rounded hover:bg-amber-600 hover:text-black transition-all"><Copy size={14}/></button>
+        </div>
+      </div>
+
+      <div className="bg-[#111] border border-red-900/20 rounded-3xl p-8 shadow-2xl">
+        <h3 className="text-red-500 mb-6 flex items-center gap-2"><ArrowUpCircle size={20}/> Outbound Fund Transfer</h3>
+        <div className="space-y-4">
+          <input type="text" placeholder="EXTERNAL XMR ADDRESS" value={wAddr} onChange={e => setWAddr(e.target.value)} className="w-full bg-black border border-white/10 p-4 rounded-xl text-[11px] text-amber-500 outline-none font-mono" />
+          <div className="flex gap-4">
+            <input type="number" placeholder="AMOUNT" value={wAmt} onChange={e => setWAmt(e.target.value)} className="flex-1 bg-black border border-white/10 p-4 rounded-xl text-[11px] text-amber-500 font-mono" />
+            <button onClick={() => onWithdraw(wAddr, parseFloat(wAmt))} className="bg-red-600 text-black px-8 rounded-xl font-black uppercase text-[11px] hover:bg-red-500">Execute</button>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="bg-[#111] border border-green-900/20 rounded-3xl p-6 shadow-2xl">
+          <h3 className="text-green-500 mb-4 flex items-center gap-2 normal-case not-italic"><ArrowDownCircle size={18}/> Recent deposits</h3>
+          <div className="space-y-3">
+            {recentDeposits.length === 0 && (
+              <p className="text-[10px] text-gray-500 normal-case not-italic">No recent incoming deposits detected for this address.</p>
+            )}
+            {recentDeposits.map((dep, idx) => (
+              <div key={`${dep.txid || 'dep'}-${idx}`} className="bg-black border border-white/5 rounded-xl p-3">
+                <div className="flex items-center justify-between text-[10px] mb-1">
+                  <span className="text-green-400">{Number(dep.amount_xmr || 0).toFixed(6)} XMR</span>
+                  <span className={`${Number(dep.confirmations || 0) > 0 ? 'text-amber-500' : 'text-gray-500'}`}>
+                    {Number(dep.confirmations || 0)} conf
+                  </span>
+                </div>
+                <code className="text-[9px] text-gray-500 break-all">{dep.txid || 'pending txid'}</code>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="bg-[#111] border border-amber-900/20 rounded-3xl p-6 shadow-2xl">
+          <h3 className="text-amber-500 mb-4 flex items-center gap-2 normal-case not-italic"><ArrowUpCircle size={18}/> Recent withdrawals</h3>
+          <div className="space-y-3">
+            {recentWithdrawals.length === 0 && (
+              <p className="text-[10px] text-gray-500 normal-case not-italic">No withdrawal history yet.</p>
+            )}
+            {recentWithdrawals.map((wd, idx) => (
+              <div key={`${wd.id || 'wd'}-${idx}`} className="bg-black border border-white/5 rounded-xl p-3">
+                <div className="flex items-center justify-between text-[10px] mb-1">
+                  <span className="text-amber-500">{Number(wd.amount_xmr || 0).toFixed(6)} XMR</span>
+                  <span className="text-gray-400">{String(wd.status || 'pending').toUpperCase()}</span>
+                </div>
+                <div className="text-[9px] text-gray-600 normal-case not-italic">
+                  {wd.created_at ? new Date(wd.created_at).toLocaleString() : 'No date'}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ============================================================
 // LOGIN PAGE
 // ============================================================
 // ============================================================
-// ANTI-PHISHING LOGIN - Composant login 2 etapes
+// ANTI-PHISHING LOGIN - Component login 2 etapes
 // ============================================================
 function AntiPhishingLogin({ onLogin }) {
-  const [step, setStep] = React.useState(1);
+  const [step, setStep] = React.useState(1); // 1=user, 2=pass, 3=2fa
   const [username, setUsername] = React.useState('');
   const [password, setPassword] = React.useState('');
-  const [antiPhishingPhrase, setAntiPhishingPhrase] = React.useState(null);
+  const [totpCode, setTotpCode] = React.useState('');
   const [hasPhrase, setHasPhrase] = React.useState(false);
   const [error, setError] = React.useState('');
   const [loading, setLoading] = React.useState(false);
@@ -2435,8 +2988,7 @@ function AntiPhishingLogin({ onLogin }) {
         setError('User ID not found');
         setLoading(false); return;
       }
-      setAntiPhishingPhrase(data.anti_phishing_phrase);
-      setHasPhrase(data.has_phrase);
+      setHasPhrase(!!data.has_phrase);
       setStep(2);
     } catch(e) {
       setError('Connection error - is the backend running?');
@@ -2446,28 +2998,49 @@ function AntiPhishingLogin({ onLogin }) {
   };
 
   const doLogin = async () => {
-    if (!password.trim()) { setError('Enter your passphrase'); return; }
+    if (step !== 3 && !password.trim()) { setError('Enter your passphrase'); return; }
+    if (step === 3 && !totpCode.trim()) { setError('Enter your 6-digit authenticator code (or backup code)'); return; }
     setLoading(true);
     setError('');
     try {
-      const resp = await fetch('/api/login', {
+      const body = { username: username.trim(), password: password.trim() };
+      if (step === 3) body.totp_code = totpCode.trim();
+      const resp = await fetch(silkGenesisApiUrl('/api/login'), {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({username: username.trim(), password: password.trim()})
+        body: JSON.stringify(body),
       });
       const data = await resp.json();
       if (resp.status === 429) {
         setError('Rate limited. Wait ' + data.retry_after + 's.');
         setLoading(false); return;
       }
+      if (resp.ok && data.status === '2fa_required') {
+        setStep(3);
+        setTotpCode('');
+        setLoading(false);
+        return;
+      }
+      if (resp.ok && data.status === '2fa_setup_required') {
+        setError('2FA setup is mandatory for this account role. Complete 2FA setup first.');
+        setLoading(false);
+        return;
+      }
       if (resp.ok && data.status === 'success') {
-        onLogin(data.user);
+        if (data.anti_phishing_phrase) {
+          window.alert(
+            `Login successful.\n\nYour anti-phishing phrase:\n\n"${data.anti_phishing_phrase}"\n\nIf this does not match what you expect, log out immediately.`
+          );
+        }
+        onLogin(data.user, data.session_token);
       } else {
-        setError('Invalid credentials');
-        setStep(1);
-        setUsername('');
-        setPassword('');
-        setAntiPhishingPhrase(null);
+        setError(data.detail === 'INVALID_2FA_CODE' ? 'Invalid 2FA code. Try again.' : 'Invalid credentials');
+        if (step === 3) setTotpCode('');
+        else {
+          setStep(1);
+          setUsername('');
+          setPassword('');
+        }
       }
     } catch(e) {
       setError('Connection error');
@@ -2487,7 +3060,7 @@ function AntiPhishingLogin({ onLogin }) {
         {step === 1 && (
           <div>
             <div style={{color:'#00ff41',fontSize:'13px',marginBottom:'15px',fontFamily:'monospace'}}>
-              STEP 1/2 - ENTER YOUR USER ID
+              STEP 1/3 - ENTER YOUR USER ID
             </div>
             <input
               value={username}
@@ -2506,24 +3079,56 @@ function AntiPhishingLogin({ onLogin }) {
           </div>
         )}
 
+        {step === 3 && (
+          <div>
+            <div style={{color:'#00ff41',fontSize:'13px',marginBottom:'15px',fontFamily:'monospace'}}>
+              STEP 3/3 - TWO-FACTOR AUTHENTICATION
+            </div>
+            <div style={{color:'#888',fontSize:'11px',marginBottom:'12px',fontFamily:'monospace'}}>
+              Account <span style={{color:'#00ff41'}}>{username}</span> requires a TOTP code from your authenticator app (or a backup code).
+            </div>
+            <input
+              type="text"
+              value={totpCode}
+              onChange={e => setTotpCode(e.target.value.replace(/\s/g, ''))}
+              onKeyDown={e => e.key === 'Enter' && doLogin()}
+              placeholder="6-digit code"
+              style={{width:'100%',background:'#000',border:'1px solid #00ff41',color:'#00ff41',padding:'12px',marginBottom:'12px',boxSizing:'border-box',fontFamily:'monospace',letterSpacing:'0.3em',textAlign:'center',fontSize:'18px'}}
+            />
+            <div style={{display:'flex',gap:'8px'}}>
+              <button
+                type="button"
+                onClick={() => { setStep(2); setTotpCode(''); setError(''); }}
+                style={{flex:1,background:'transparent',color:'#666',border:'1px solid #333',padding:'10px',cursor:'pointer',fontFamily:'monospace'}}
+              >
+                BACK
+              </button>
+              <button
+                type="button"
+                onClick={doLogin}
+                disabled={loading}
+                style={{flex:2,background:'#00ff41',color:'#000',border:'none',padding:'10px',cursor:'pointer',fontWeight:'bold',fontFamily:'monospace'}}
+              >
+                {loading ? 'VERIFYING...' : 'VERIFY 2FA'}
+              </button>
+            </div>
+          </div>
+        )}
+
         {step === 2 && (
           <div>
             <div style={{color:'#00ff41',fontSize:'13px',marginBottom:'15px',fontFamily:'monospace'}}>
-              STEP 2/2 - VERIFY SITE AND ENTER PASSPHRASE
+              STEP 2/3 - VERIFY SITE AND ENTER PASSPHRASE
             </div>
             <div style={{background:'rgba(0,255,65,0.05)',border:'1px solid #00ff41',padding:'12px',marginBottom:'15px'}}>
-              <div style={{color:'#888',fontSize:'11px',marginBottom:'6px',fontFamily:'monospace'}}>YOUR ANTI-PHISHING PHRASE:</div>
-              {hasPhrase && antiPhishingPhrase ? (
-                <div style={{color:'#00ff41',fontSize:'16px',fontFamily:'monospace',fontWeight:'bold',letterSpacing:'1px'}}>
-                  "{antiPhishingPhrase}"
-                </div>
-              ) : (
-                <div style={{color:'#ff6b35',fontSize:'12px',fontFamily:'monospace'}}>
-                  No phrase set yet. Set one in your profile after login.
-                </div>
-              )}
+              <div style={{color:'#888',fontSize:'11px',marginBottom:'6px',fontFamily:'monospace'}}>ANTI-PHISHING</div>
+              <div style={{color:'#00ff41',fontSize:'12px',fontFamily:'monospace',lineHeight:1.5}}>
+                {hasPhrase
+                  ? 'A custom phrase is configured on this account. It will be shown once in a dialog immediately after a successful login — not before your password.'
+                  : 'No phrase configured yet. You can set one in your profile after login.'}
+              </div>
               <div style={{color:'#555',fontSize:'10px',marginTop:'6px',fontFamily:'monospace'}}>
-                If this phrase is wrong or missing, you may be on a phishing site. DO NOT enter your password.
+                Never trust a site that asks for your password before you have authenticated.
               </div>
             </div>
             <div style={{color:'#888',fontSize:'11px',marginBottom:'6px',fontFamily:'monospace'}}>Logging in as: <span style={{color:'#00ff41'}}>{username}</span></div>
@@ -2633,7 +3238,7 @@ function PGPKeyManager({ currentUser }) {
 // ============================================================
 // ANTI-PHISHING PHRASE MANAGER
 // ============================================================
-function AntiPhishingPhraseManager({ currentUser }) {
+function AntiPhishingPhraseManager({ currentUser, sessionToken }) {
   const [phrase, setPhrase] = React.useState('');
   const [password, setPassword] = React.useState('');
   const [status, setStatus] = React.useState('');
@@ -2641,11 +3246,15 @@ function AntiPhishingPhraseManager({ currentUser }) {
 
   const savePhrase = async () => {
     if (!phrase.trim() || !password.trim()) { setStatus('Fill all fields'); return; }
+    if (!sessionToken) { setStatus('Session expired. Please log in again.'); return; }
     setLoading(true);
     try {
       const resp = await fetch('/api/user/anti-phishing-phrase', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${sessionToken}`
+        },
         body: JSON.stringify({username: currentUser.username, phrase: phrase.trim(), password: password.trim()})
       });
       const data = await resp.json();
@@ -2664,32 +3273,275 @@ function AntiPhishingPhraseManager({ currentUser }) {
   };
 
   return (
-    <div style={{background:'rgba(0,20,0,0.8)',border:'1px solid #ff6b35',padding:'20px',marginTop:'20px',borderRadius:'8px'}}>
-      <h3 style={{color:'#ff6b35',fontFamily:'monospace',marginTop:0}}>ANTI-PHISHING PHRASE</h3>
-      <p style={{color:'#888',fontSize:'12px',fontFamily:'monospace',marginTop:0}}>
+    <div className="bg-[#111] border border-amber-900/30 rounded-3xl p-6 shadow-2xl">
+      <h3 className="text-amber-500 text-sm font-black tracking-widest uppercase not-italic">Anti-phishing phrase</h3>
+      <p className="text-gray-500 text-[11px] normal-case not-italic font-medium mt-1">
         Set a secret phrase shown on every login. If you do not see your phrase, you are on a phishing site.
       </p>
       <input
         value={phrase}
         onChange={e => setPhrase(e.target.value)}
         placeholder="Your secret phrase (e.g. purple elephant 42)"
-        style={{width:'100%',background:'#000',border:'1px solid #ff6b35',color:'#ff6b35',padding:'10px',marginBottom:'10px',boxSizing:'border-box',fontFamily:'monospace'}}
+        className="w-full bg-black border border-white/10 rounded-lg px-3 py-2 text-amber-500 text-sm font-mono not-italic mt-4 mb-2"
       />
       <input
         type="password"
         value={password}
         onChange={e => setPassword(e.target.value)}
         placeholder="Confirm with your passphrase"
-        style={{width:'100%',background:'#000',border:'1px solid #333',color:'#00ff41',padding:'10px',marginBottom:'10px',boxSizing:'border-box',fontFamily:'monospace'}}
+        className="w-full bg-black border border-white/10 rounded-lg px-3 py-2 text-amber-500 text-sm font-mono not-italic mb-3"
       />
       <button
         onClick={savePhrase}
         disabled={loading}
-        style={{background:'#ff6b35',color:'#000',border:'none',padding:'10px 20px',cursor:'pointer',fontWeight:'bold',fontFamily:'monospace'}}
+        className="bg-amber-600 text-black px-4 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wide hover:bg-amber-500 not-italic disabled:opacity-50"
       >
         {loading ? 'SAVING...' : 'SET PHRASE'}
       </button>
-      {status && <div style={{color: status.startsWith('Anti') ? '#00ff41' : '#ff4444',marginTop:'8px',fontFamily:'monospace',fontSize:'12px'}}>{status}</div>}
+      {status && (
+        <div className={`mt-2 text-xs font-mono normal-case not-italic ${status.startsWith('Anti') ? 'text-green-400' : 'text-red-400'}`}>
+          {status}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SessionSecurityCenter({ currentUser }) {
+  const [sessions, setSessions] = React.useState([]);
+  const [loading, setLoading] = React.useState(false);
+  const [status, setStatus] = React.useState('');
+
+  const getToken = () => {
+    try {
+      const raw = localStorage.getItem('silkGenesis_session');
+      if (!raw) return '';
+      const parsed = JSON.parse(raw);
+      return parsed?.session_token || '';
+    } catch {
+      return '';
+    }
+  };
+
+  const loadSessions = async () => {
+    const token = getToken();
+    if (!token) {
+      setStatus('No active session token found. Re-login to enable session controls.');
+      setSessions([]);
+      return;
+    }
+    setLoading(true);
+    setStatus('');
+    try {
+      const res = await fetch(`/api/security/sessions?token=${encodeURIComponent(token)}`);
+      const data = await res.json();
+      if (res.ok) {
+        setSessions(Array.isArray(data.sessions) ? data.sessions : []);
+      } else {
+        setStatus('Error: ' + (data.detail || 'Failed to load sessions'));
+      }
+    } catch (e) {
+      setStatus('Connection error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const logoutOtherDevices = async () => {
+    const token = getToken();
+    if (!token) return;
+    if (!window.confirm('Terminate all other active sessions?')) return;
+    setLoading(true);
+    setStatus('');
+    try {
+      const res = await fetch('/api/security/sessions/logout-all', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setStatus(`Done: ${data.closed_sessions || 0} session(s) terminated.`);
+        await loadSessions();
+      } else {
+        setStatus('Error: ' + (data.detail || 'Failed to terminate sessions'));
+      }
+    } catch (e) {
+      setStatus('Connection error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  React.useEffect(() => {
+    if (currentUser?.username) loadSessions();
+  }, [currentUser?.username]);
+
+  return (
+    <div className="bg-[#111] border border-amber-900/30 rounded-3xl p-6 shadow-2xl">
+      <h3 className="text-amber-500 text-sm font-black tracking-widest uppercase not-italic">Session security center</h3>
+      <p className="text-gray-500 text-[11px] normal-case not-italic font-medium mt-1">
+        Monitor active sessions and terminate all other devices instantly.
+      </p>
+      <div className="flex gap-2 mb-3 mt-4">
+        <button onClick={loadSessions} disabled={loading} className="bg-black border border-white/10 rounded-lg px-3 py-2 text-gray-300 text-[10px] font-bold uppercase not-italic hover:bg-white/5 disabled:opacity-50">
+          {loading ? 'LOADING...' : 'REFRESH SESSIONS'}
+        </button>
+        <button onClick={logoutOtherDevices} disabled={loading} className="bg-amber-600 text-black px-4 py-2 rounded-xl text-[10px] font-bold uppercase hover:bg-amber-500 disabled:opacity-50 not-italic">
+          LOGOUT OTHER DEVICES
+        </button>
+      </div>
+      {sessions.length > 0 ? (
+        <div className="bg-black border border-white/10 rounded-xl p-3 max-h-[180px] overflow-auto">
+          {sessions.map((s, i) => (
+            <div key={i} className={`py-2 ${i === sessions.length - 1 ? '' : 'border-b border-white/5'}`}>
+              <div className="text-amber-500 text-xs font-mono normal-case not-italic">Session {s.token_preview}</div>
+              <div className="text-gray-500 text-[10px] font-mono normal-case not-italic">Active {Math.floor((s.idle_seconds || 0) / 60)} min ago · Age {Math.floor((s.age_seconds || 0) / 60)} min</div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="text-gray-500 text-xs normal-case not-italic">No active sessions found.</div>
+      )}
+      {status && (
+        <div className={`mt-2 text-xs font-mono normal-case not-italic ${status.startsWith('Done') ? 'text-green-400' : 'text-red-400'}`}>
+          {status}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// Identity: 2FA (TOTP) — visible in Profile tab, above PGP
+// ============================================================
+function TwoFactorIdentityPanel({ username, sessionToken, onEnabled, onDisabled }) {
+  const [status, setStatus] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [showModal, setShowModal] = useState(false);
+  const [disableCode, setDisableCode] = useState('');
+  const [disableErr, setDisableErr] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    if (!username) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    try {
+      const r = await fetch(`/api/2fa/status/${encodeURIComponent(username)}`);
+      const d = await r.json();
+      if (r.ok) setStatus(d);
+      else setStatus({ enabled: false, backup_codes_remaining: 0 });
+    } catch {
+      setStatus({ enabled: false, backup_codes_remaining: 0 });
+    } finally {
+      setLoading(false);
+    }
+  }, [username]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const doDisable = async (e) => {
+    e?.preventDefault();
+    if (!disableCode || disableCode.length !== 6) {
+      setDisableErr('Enter your current 6-digit authenticator code.');
+      return;
+    }
+    setBusy(true);
+    setDisableErr('');
+    try {
+      const r = await fetch('/api/2fa/disable', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
+        },
+        body: JSON.stringify({ username, code: disableCode.replace(/\s/g, '') }),
+      });
+      const d = await r.json();
+      if (!r.ok) {
+        setDisableErr(typeof d.detail === 'string' ? d.detail : 'Failed to disable 2FA');
+        setBusy(false);
+        return;
+      }
+      setDisableCode('');
+      onDisabled?.();
+      await load();
+    } catch {
+      setDisableErr('Network error');
+    }
+    setBusy(false);
+  };
+
+  if (!username) return null;
+
+  return (
+    <div className="bg-[#111] border border-amber-900/30 rounded-3xl p-6 shadow-2xl">
+      <div>
+        <h3 className="text-amber-500 text-sm font-black tracking-widest uppercase not-italic flex items-center gap-2">
+          <Key size={18} /> Two-factor authentication (2FA)
+        </h3>
+        <p className="text-gray-500 text-[11px] normal-case not-italic font-medium mt-1 max-w-xl">
+          Set up 2FA here. This is an offline TOTP (one-time password) flow generated locally by your authenticator app. After enabling, store backup codes in a safe place.
+        </p>
+      </div>
+      {loading ? (
+        <p className="text-gray-500 text-xs mt-4">Loading…</p>
+      ) : status?.enabled ? (
+        <div className="mt-4 space-y-3">
+          <p className="text-green-500 text-xs font-mono not-italic">
+            ● 2FA is on · {status.backup_codes_remaining ?? 0} backup code(s) left
+          </p>
+          <form onSubmit={doDisable} className="flex flex-col sm:flex-row gap-2 items-stretch sm:items-end max-w-lg">
+            <div className="flex-1">
+              <label className="text-[10px] text-gray-500 block mb-1 normal-case not-italic">
+                Turn off 2FA (current 6-digit code)
+              </label>
+              <input
+                value={disableCode}
+                onChange={e => setDisableCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                className="w-full bg-black border border-white/10 rounded-lg px-3 py-2 text-amber-500 text-sm font-mono not-italic"
+                placeholder="000000"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={busy}
+              className="bg-red-900/40 text-red-300 border border-red-800/50 px-4 py-2 rounded-lg text-[10px] font-bold uppercase hover:bg-red-800/50 disabled:opacity-50 not-italic"
+            >
+              {busy ? '…' : 'Turn off 2FA'}
+            </button>
+          </form>
+          {disableErr && <p className="text-red-400 text-xs normal-case not-italic">{disableErr}</p>}
+        </div>
+      ) : (
+        <div className="mt-4">
+          <p className="text-amber-600/80 text-xs not-italic mb-3">2FA is not enabled for this account.</p>
+          <button
+            type="button"
+            onClick={() => setShowModal(true)}
+            className="bg-amber-600 text-black px-4 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wide hover:bg-amber-500 not-italic"
+          >
+            Set up 2FA
+          </button>
+        </div>
+      )}
+      {showModal && (
+        <TwoFactorSetup
+          user={username}
+          token={sessionToken}
+          onClose={() => { setShowModal(false); load(); }}
+          onEnabled={() => {
+            onEnabled?.();
+            setShowModal(false);
+            load();
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -2700,27 +3552,11 @@ function LoginPage({ onLogin, onRegister }) {
   const [password, setPassword] = useState('');
   const [captchaToken, setCaptchaToken] = useState(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [antiPhishPhrase, setAntiPhishPhrase] = useState(null);
-  const [phishLoading, setPhishLoading] = useState(false);
-
-  // Recuperer la phrase anti-phishing quand l'utilisateur quitte le champ username
-  const fetchAntiPhishPhrase = async (uname) => {
-    if (!uname || uname.length < 2 || isRegister) return;
-    setPhishLoading(true);
-    try {
-      const res = await fetch(`/api/antiphish?username=${encodeURIComponent(uname)}`);
-      if (res.ok) {
-        const data = await res.json();
-        setAntiPhishPhrase(data.phrase || null);
-      } else {
-        setAntiPhishPhrase(null);
-      }
-    } catch(e) {
-      setAntiPhishPhrase(null);
-    } finally {
-      setPhishLoading(false);
-    }
-  };
+  const [awaiting2fa, setAwaiting2fa] = useState(false);
+  const [totpCode, setTotpCode] = useState('');
+  const [login2faError, setLogin2faError] = useState('');
+  const [loginBusy, setLoginBusy] = useState(false);
+  const [showMandatory2faSetup, setShowMandatory2faSetup] = useState(false);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -2728,17 +3564,50 @@ function LoginPage({ onLogin, onRegister }) {
     if (isRegister) {
       const success = await onRegister(username, password, captchaToken);
       if (success) setIsRegister(false);
-    } else {
-      onLogin(username, password, captchaToken);
+      return;
+    }
+    setLoginBusy(true);
+    try {
+      const code = awaiting2fa ? totpCode.trim() : '';
+      if (awaiting2fa && !code) {
+        alert('Enter your 6-digit authenticator code (or a backup code).');
+        return;
+      }
+      const result = await onLogin(username, password, captchaToken, code);
+      if (result === '2fa_required') {
+        setAwaiting2fa(true);
+        setTotpCode('');
+        setLogin2faError('');
+        return;
+      }
+      if (result === '2fa_setup_required') {
+        setShowMandatory2faSetup(true);
+        setAwaiting2fa(false);
+        setTotpCode('');
+        setLogin2faError('');
+        return;
+      }
+      if (result === 'invalid_2fa') {
+        setLogin2faError('Invalid 2FA code. Try again.');
+        setTotpCode('');
+        return;
+      }
+      if (result === 'success') {
+        setAwaiting2fa(false);
+        setTotpCode('');
+        setLogin2faError('');
+      }
+    } finally {
+      setLoginBusy(false);
     }
   };
 
   return (
-    <div className="min-h-screen bg-[#050505] flex items-center justify-center p-4 font-mono relative uppercase italic font-black text-center">
-      <div className="w-full max-w-lg bg-[#0d0d0d] border border-amber-900/30 p-12 rounded-3xl shadow-2xl">
+    <div className="min-h-screen bg-[#050505] bg-[radial-gradient(circle_at_top,rgba(245,158,11,0.15),transparent_55%)] flex items-center justify-center p-4 font-mono relative uppercase italic font-black text-center">
+      <div className="w-full max-w-lg bg-[#0d0d0d]/95 border border-amber-500/60 p-12 rounded-3xl shadow-[0_0_25px_rgba(245,158,11,0.4),0_0_80px_rgba(245,158,11,0.12)]">
         <div className="text-center mb-10">
           <img src={Logo} alt="SilkGenesis" className="h-16 mx-auto mb-8"/>
-          <p className="text-[10px] text-amber-900 tracking-[0.7em] border-t border-amber-900/20 pt-5 uppercase">
+          <p className="text-[10px] text-amber-300 tracking-[0.7em] border-t border-amber-500/30 pt-5 uppercase">
             {isRegister ? "Fabricate New Identity" : "Authentication Gateway"}
           </p>
         </div>
@@ -2746,38 +3615,55 @@ function LoginPage({ onLogin, onRegister }) {
           <input
             type="text"
             placeholder="USER ID"
-            className="w-full bg-black border-2 border-white/5 p-5 rounded-2xl text-amber-500 outline-none text-lg font-black placeholder:text-amber-900/20"
-            onChange={(e) => { setUsername(e.target.value); setAntiPhishPhrase(null); }}
-            onBlur={(e) => fetchAntiPhishPhrase(e.target.value)}
+            value={username}
+            disabled={awaiting2fa}
+            className="w-full bg-black/70 border-2 border-amber-500/25 p-5 rounded-2xl text-amber-200 outline-none text-lg font-black placeholder:text-amber-200/45 focus:border-amber-400 disabled:opacity-50"
+            onChange={(e) => { setUsername(e.target.value); }}
           />
-          {/* Phrase anti-phishing affichee apres saisie du username */}
           {!isRegister && (
-            <div style={{minHeight:'36px'}}>
-              {phishLoading && (
-                <div style={{background:'rgba(0,20,0,0.6)',border:'1px solid #444',padding:'8px 12px',borderRadius:'8px',color:'#666',fontSize:'11px',fontFamily:'monospace',textAlign:'center'}}>
-                  Verifying identity token...
-                </div>
-              )}
-              {!phishLoading && antiPhishPhrase && (
-                <div style={{background:'rgba(0,30,0,0.8)',border:'1px solid #d97706',padding:'10px 14px',borderRadius:'8px',textAlign:'center'}}>
-                  <div style={{color:'#888',fontSize:'9px',letterSpacing:'0.2em',marginBottom:'4px',fontFamily:'monospace'}}>ANTI-PHISHING PHRASE</div>
-                  <div style={{color:'#f59e0b',fontSize:'14px',fontWeight:'bold',fontFamily:'monospace',letterSpacing:'0.1em'}}>
-                    🔐 {antiPhishPhrase}
-                  </div>
-                  <div style={{color:'#555',fontSize:'9px',marginTop:'4px',fontFamily:'monospace'}}>If you do not see this phrase, leave immediately</div>
-                </div>
-              )}
-              {!phishLoading && username.length >= 2 && antiPhishPhrase === null && (
-                <div style={{background:'rgba(20,0,0,0.6)',border:'1px solid #333',padding:'8px 12px',borderRadius:'8px',color:'#555',fontSize:'10px',fontFamily:'monospace',textAlign:'center'}}>
-                  No anti-phishing phrase set
-                </div>
-              )}
+            <div style={{minHeight:'28px'}}>
+              <div style={{background:'rgba(0,20,0,0.5)',border:'1px solid #444',padding:'8px 12px',borderRadius:'8px',color:'#888',fontSize:'10px',fontFamily:'monospace',textAlign:'center'}}>
+                Anti-phishing phrase is only shown after successful login (never before password).
+              </div>
             </div>
           )}
-          <input type="password" placeholder="PASSPHRASE" className="w-full bg-black border-2 border-white/5 p-5 rounded-2xl text-amber-500 outline-none text-lg font-black placeholder:text-amber-900/20" onChange={(e) => setPassword(e.target.value)}/>
-          <div className="bg-black border border-amber-900/20 p-6 rounded-2xl text-center space-y-4 shadow-inner">
+          <input
+            type="password"
+            placeholder="PASSPHRASE"
+            value={password}
+            disabled={awaiting2fa}
+            className="w-full bg-black/70 border-2 border-amber-500/25 p-5 rounded-2xl text-amber-200 outline-none text-lg font-black placeholder:text-amber-200/45 focus:border-amber-400 disabled:opacity-50"
+            onChange={(e) => setPassword(e.target.value)}
+          />
+          {!isRegister && awaiting2fa && (
+            <div className="space-y-2">
+              <p className="text-[10px] text-amber-400/90 normal-case not-italic font-medium text-left">
+                This account has 2FA enabled. Enter the 6-digit code from your authenticator app (or a backup code).
+              </p>
+              <input
+                type="text"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                placeholder="000000"
+                value={totpCode}
+                onChange={(e) => { setTotpCode(e.target.value.replace(/\s/g, '')); setLogin2faError(''); }}
+                className="w-full bg-black/70 border-2 border-amber-500/50 p-5 rounded-2xl text-amber-200 outline-none text-2xl font-mono tracking-[0.35em] text-center not-italic placeholder:text-amber-200/45 focus:border-amber-400"
+              />
+              {login2faError ? (
+                <p className="text-[11px] text-red-400/95 normal-case not-italic font-medium text-center">{login2faError}</p>
+              ) : null}
+              <button
+                type="button"
+                onClick={() => { setAwaiting2fa(false); setTotpCode(''); setLogin2faError(''); }}
+                className="text-[10px] text-gray-500 hover:text-amber-300 normal-case not-italic underline"
+              >
+                Change username / password
+              </button>
+            </div>
+          )}
+          <div className="bg-black border border-amber-700/30 p-6 rounded-2xl text-center space-y-4 shadow-inner">
             {!captchaToken ? (
-              <button type="button" onClick={() => setIsModalOpen(true)} className="w-full py-3.5 border-2 border-amber-900/40 text-amber-800 text-[10px] uppercase hover:bg-amber-900/10 flex items-center justify-center gap-3 rounded-xl">
+              <button type="button" onClick={() => setIsModalOpen(true)} className="w-full py-3.5 border-2 border-amber-500/40 text-amber-200 text-[10px] uppercase hover:bg-amber-700/20 flex items-center justify-center gap-3 rounded-xl">
                 <Fingerprint size={18}/> Run integrity check
               </button>
             ) : (
@@ -2787,13 +3673,26 @@ function LoginPage({ onLogin, onRegister }) {
             )}
           </div>
           <ClockCaptcha isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} onVerify={setCaptchaToken}/>
-          <button type="submit" disabled={!captchaToken} className={`w-full py-5 rounded-2xl tracking-[0.4em] text-[13px] font-black transition-all ${captchaToken ? 'bg-amber-600 text-black hover:bg-amber-500 shadow-xl' : 'bg-gray-900 text-gray-800'}`}>
-            {isRegister ? "Fabricate Identity" : "Initialize Access"}
+          <button type="submit" disabled={!captchaToken || loginBusy} className={`w-full py-5 rounded-2xl tracking-[0.4em] text-[13px] font-black transition-all ${captchaToken && !loginBusy ? 'bg-amber-500 text-black hover:bg-amber-400 shadow-[0_0_20px_rgba(245,158,11,0.45)]' : 'bg-gray-900 text-gray-700'}`}>
+            {loginBusy ? '…' : isRegister ? 'Fabricate Identity' : awaiting2fa ? 'Verify 2FA' : 'Initialize Access'}
           </button>
-          <p className="text-[10px] text-gray-600 mt-4 cursor-pointer hover:text-amber-500 transition-colors uppercase" onClick={() => {setIsRegister(!isRegister); setCaptchaToken(null); setAntiPhishPhrase(null);}}>
+          <p className="text-[10px] text-gray-300 mt-4 cursor-pointer hover:text-amber-300 transition-colors uppercase" onClick={() => {setIsRegister(!isRegister); setCaptchaToken(null); setAwaiting2fa(false); setTotpCode(''); setLogin2faError('');}}>
             {isRegister ? "Already in network? Login" : "No node found? Register"}
           </p>
         </form>
+        {showMandatory2faSetup && (
+          <TwoFactorSetup
+            user={username.trim()}
+            password={password.trim()}
+            onClose={() => setShowMandatory2faSetup(false)}
+            onEnabled={() => {
+              setShowMandatory2faSetup(false);
+              setAwaiting2fa(true);
+              setLogin2faError('2FA enabled. Enter your authenticator code to complete login.');
+              setTotpCode('');
+            }}
+          />
+        )}
       </div>
     </div>
   );
@@ -2940,7 +3839,7 @@ function AdminCategoryManager({ categories, onAddCategory, onDeleteCategory }) {
               <label className="text-[9px] text-gray-500 uppercase block mb-2">Parent Category (optional)</label>
               <select value={newCatParent} onChange={e => setNewCatParent(e.target.value)}
                 className="w-full bg-black border border-white/10 p-3 rounded-xl text-[11px] text-gray-400 outline-none">
-                <option value="">— ROOT (Parent Category) —</option>
+                <option value="">- ROOT (Parent Category) -</option>
                 {parentCats.map(c => <option key={c.name} value={c.name}>{c.icon} {c.name}</option>)}
               </select>
             </div>
@@ -3273,7 +4172,7 @@ function ReferralCard({ username }) {
                   className="w-full bg-black border border-white/10 p-3 rounded-xl text-[11px] text-purple-400 outline-none font-mono tracking-widest mb-3"
                 />
                 <button onClick={applyReferral} className="w-full py-3 bg-purple-600 text-black font-black uppercase text-[10px] rounded-xl hover:bg-purple-500 transition-all">
-                  Apply Code → Get 0.01 XMR
+                  Apply Code -> Get 0.01 XMR
                 </button>
               </div>
             </div>
@@ -3425,7 +4324,7 @@ function CategorySelectField({ value, onChange }) {
   const [categories, setCategories] = React.useState([]);
   
   React.useEffect(() => {
-    fetch('/api/categories/flat')
+    fetch(silkGenesisApiUrl('/api/categories/flat'))
       .then(r => r.json())
       .then(data => setCategories(data.categories || []))
       .catch(() => {});
@@ -3450,7 +4349,7 @@ function CategorySelectField({ value, onChange }) {
         outline: 'none'
       }}
     >
-      <option value="">— Select category —</option>
+      <option value="">- Select category -</option>
       {parents.map(p => (
         <React.Fragment key={p.id}>
           <option value={p.id}>{p.icon} {p.name}</option>
@@ -3465,6 +4364,7 @@ function CategorySelectField({ value, onChange }) {
 
 function App() {
   const [user, setUser] = useState(null);
+  const [sessionToken, setSessionToken] = useState(null);
   const [activeTab, setActiveTab] = useState('home');
   const [selectedCategory, setSelectedCategory] = useState("All");
   const [balance, setBalance] = useState(0);
@@ -3478,6 +4378,7 @@ function App() {
   const [xmrChange, setXmrChange] = useState(0);
   const [btcChange, setBtcChange] = useState(0);
   const [topVendors, setTopVendors] = useState([]);
+  const [founderStats, setFounderStats] = useState({ claimed: 0, limit: 20 });
   const [topProducts, setTopProducts] = useState([]);
   const [showDepositModal, setShowDepositModal] = useState(false);
   const [showPGPKeyModal, setShowPGPKeyModal] = useState(false);
@@ -3493,6 +4394,45 @@ function App() {
   const [chatVendor, setChatVendor] = useState('');
   const [showOrderChat, setShowOrderChat] = useState(false);
   const [selectedOrderId, setSelectedOrderId] = useState('');
+  const pgpSetupRequired = !!user && (user.role === 'buyer' || user.role === 'vendor') && !user.pgp_setup_completed;
+  const authFailureHandledRef = React.useRef(false);
+
+  // Wrapper for fetch that automatically adds session token
+  const authenticatedFetch = useCallback(async (url, options = {}) => {
+    let token = sessionToken;
+    if (!token) {
+      try {
+        const saved = localStorage.getItem('silkGenesis_session');
+        if (saved) {
+          const data = JSON.parse(saved);
+          token = data.session_token;
+        }
+      } catch (e) {}
+    }
+    
+    const headers = {
+      ...options.headers,
+    };
+    
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+    
+    const resolvedUrl =
+      typeof url === 'string' && url.startsWith('/') && !url.startsWith('//')
+        ? silkGenesisApiUrl(url)
+        : url;
+    const res = await fetch(resolvedUrl, { ...options, headers });
+    if (res.status === 401 && !authFailureHandledRef.current) {
+      authFailureHandledRef.current = true;
+      localStorage.removeItem('silkGenesis_session');
+      setSessionToken(null);
+      setUser(null);
+      setActiveTab('home');
+      alert('Session expired. Please login again.');
+    }
+    return res;
+  }, [sessionToken]);
 
   // Vendor panel states
   const [newTitle, setNewTitle] = useState('');
@@ -3537,7 +4477,7 @@ function App() {
   const submitDispute = async () => {
     if (!disputeReason.trim()) { alert('Please provide a reason'); return; }
     try {
-      const res = await fetch(`http://localhost:5000/api/orders/${disputeOrderId}/dispute`, {
+      const res = await authenticatedFetch(`/api/orders/${disputeOrderId}/dispute`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ reason: disputeReason })
@@ -3556,7 +4496,7 @@ function App() {
   const releaseFunds = async (orderId) => {
     if (!window.confirm('Release funds to vendor? This cannot be undone.')) return;
     try {
-      const res = await fetch(`http://localhost:5000/api/orders/${orderId}/complete`, { method: 'POST' });
+      const res = await authenticatedFetch(`/api/orders/${orderId}/complete`, { method: 'POST' });
       const data = await res.json();
       if (data.status === 'success') {
         alert('Funds released to vendor!');
@@ -3576,7 +4516,7 @@ function App() {
 
   const verifyAndExecute = async () => {
     try {
-      const res = await fetch('http://localhost:5000/api/wallet/verify-pin', {
+      const res = await authenticatedFetch('/api/wallet/verify-pin', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ username: user.username, pin: pinInput })
@@ -3597,7 +4537,7 @@ function App() {
       alert('PIN must be exactly 6 digits'); return;
     }
     try {
-      const res = await fetch('http://localhost:5000/api/wallet/set-pin', {
+      const res = await authenticatedFetch('/api/wallet/set-pin', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ username: user.username, pin: newPin })
@@ -3617,7 +4557,7 @@ function App() {
   // ===== ADMIN DISPUTES =====
   const loadAdminDisputes = async () => {
     try {
-      const res = await fetch('http://localhost:5000/api/admin/disputes');
+      const res = await authenticatedFetch('/api/admin/disputes');
       const data = await res.json();
       setAdminDisputes(Array.isArray(data) ? data : []);
     } catch(e) {}
@@ -3625,7 +4565,7 @@ function App() {
 
   const loadDisputeChat = async (disputeId) => {
     try {
-      const res = await fetch(`http://localhost:5000/api/admin/dispute/${disputeId}/chat`);
+      const res = await authenticatedFetch(`/api/admin/dispute/${disputeId}/chat`);
       const data = await res.json();
       setSelectedDispute(data.dispute);
       setDisputeChat(data.messages || []);
@@ -3635,7 +4575,7 @@ function App() {
   const resolveDispute = async (disputeId, winner) => {
     if (!window.confirm(`Resolve in favor of ${winner}?`)) return;
     try {
-      const res = await fetch('http://localhost:5000/api/admin/resolve-dispute', {
+      const res = await authenticatedFetch('/api/admin/resolve-dispute', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ id: disputeId, winner })
@@ -3649,24 +4589,44 @@ function App() {
     } catch(e) { alert('Connection error'); }
   };
 
-    const loadData = async () => {
+    const loadData = async (userOverride = null) => {
+    const activeUser = userOverride || user;
     try {
       const calls = [
-        fetch('/api/listings'),
-        fetch('/api/categories'),
-        fetch('/api/admin/users'),
-        fetch('/api/admin/seller-requests'),
-        fetch('/api/admin/disputes'),
-        fetch('/api/top-vendors'),
-        fetch('/api/top-products'),
-        fetch('/api/crypto-prices')
+        authenticatedFetch('/api/listings'),
+        authenticatedFetch('/api/categories'),
+        authenticatedFetch('/api/top-vendors'),
+        authenticatedFetch('/api/founders/stats'),
+        authenticatedFetch('/api/top-products'),
+        authenticatedFetch('/api/crypto-prices')
       ];
-      if (user) {
-        calls.push(fetch(`/api/orders/${user.username}`));
-        calls.push(fetch(`/api/wallet/${user.username}`));
+      const isAdmin = activeUser?.role === 'admin';
+      if (isAdmin) {
+        calls.push(authenticatedFetch('/api/admin/users'));
+        calls.push(authenticatedFetch('/api/admin/seller-requests'));
+        calls.push(authenticatedFetch('/api/admin/disputes'));
+      }
+      if (activeUser) {
+        calls.push(authenticatedFetch(`/api/orders/${activeUser.username}`));
+        calls.push(authenticatedFetch(`/api/wallet/${activeUser.username}`));
       }
       const results = await Promise.all(calls);
-      const [pRes, cRes, uRes, reqRes, disRes, tvRes, tpRes, priceRes, ordersRes, walletRes] = results;
+      const [pRes, cRes, tvRes, foundersRes, tpRes, priceRes, ...restRes] = results;
+      let uRes = null;
+      let reqRes = null;
+      let disRes = null;
+      let ordersRes = null;
+      let walletRes = null;
+      let cursor = 0;
+      if (activeUser?.role === 'admin') {
+        uRes = restRes[cursor++];
+        reqRes = restRes[cursor++];
+        disRes = restRes[cursor++];
+      }
+      if (activeUser) {
+        ordersRes = restRes[cursor++];
+        walletRes = restRes[cursor++];
+      }
 
       if (pRes.ok) { const d = await pRes.json(); setProducts(d.items || []); setXmrRate(d.rate || 352.0); }
       if (cRes.ok) { const d = await cRes.json(); setCategories(Array.isArray(d) ? d : []); }
@@ -3674,6 +4634,13 @@ function App() {
       if (reqRes.ok) setSellerRequests(await reqRes.json() || []);
       if (disRes.ok) setDisputes(await disRes.json() || []);
       if (tvRes.ok) { const d = await tvRes.json(); setTopVendors(d.vendors || []); }
+      if (foundersRes.ok) {
+        const d = await foundersRes.json();
+        setFounderStats({
+          claimed: Number(d.claimed || 0),
+          limit: Number(d.limit || 20),
+        });
+      }
       if (tpRes.ok) { const d = await tpRes.json(); setTopProducts(d.items || []); }
       if (priceRes.ok) {
         const d = await priceRes.json();
@@ -3696,15 +4663,16 @@ function App() {
         const data = JSON.parse(saved);
         if (data && data.user) {
           setUser(data.user);
+          setSessionToken(data.session_token);
           setBalance(data.user.balance || 0);
-          loadData();
+          loadData(data.user);
         } else {
-          // Session corrompue - on la supprime
+          // Corrupted session - remove it
           localStorage.removeItem('silkGenesis_session');
         }
       }
     } catch(e) {
-      // JSON invalide - on supprime la session
+      // Invalid JSON - remove session
       localStorage.removeItem('silkGenesis_session');
     }
   }, []);
@@ -3716,20 +4684,53 @@ function App() {
     }
   }, [user]);
 
+  // Defense in depth: never allow non-admin to stay on admin tabs.
+  useEffect(() => {
+    if (!user) return;
+    const adminTabs = new Set(['admin_panel', 'admin_categories']);
+    if (adminTabs.has(activeTab) && user.role !== 'admin') {
+      setActiveTab('home');
+    }
+  }, [activeTab, user]);
+
   const handleAction = async (url, body) => {
     try {
-      const res = await fetch(`${url}`, {
+      const res = await authenticatedFetch(`${url}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
       });
-      if (res.ok) { await loadData(); return true; }
-      else { const err = await res.json(); alert(`ERROR: ${err.detail}`); return false; }
+      if (res.ok) {
+        const data = await res.json().catch(() => ({}));
+        if (url === '/api/user/update-avatar' && user?.username) {
+          setUser(prev => {
+            if (!prev) return prev;
+            const next = { ...prev, avatar: data?.avatar ?? body?.avatar ?? null };
+            try {
+              const raw = localStorage.getItem('silkGenesis_session');
+              if (raw) {
+                const session = JSON.parse(raw);
+                localStorage.setItem(
+                  'silkGenesis_session',
+                  JSON.stringify({ ...session, user: next })
+                );
+              }
+            } catch {}
+            return next;
+          });
+        }
+        await loadData();
+        return true;
+      } else {
+        const err = await res.json();
+        alert(`ERROR: ${err.detail}`);
+        return false;
+      }
     } catch (e) { alert("SERVER ERROR"); return false; }
   };
 
   const handleDeposit = async (amount) => {
-    const res = await fetch('/api/wallet/deposit', {
+    const res = await authenticatedFetch('/api/wallet/deposit', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: user.username, amount })
@@ -3748,7 +4749,7 @@ function App() {
 
   const handleWithdraw = async (address, amount) => {
     if (amount > balance) return alert("INSUFFICIENT FUNDS");
-    const res = await fetch('/api/wallet/withdraw', {
+    const res = await authenticatedFetch('/api/wallet/withdraw', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: user.username, address, amount })
@@ -3776,40 +4777,77 @@ function App() {
     if (ok) { alert("TRANSMISSION SUCCESS"); setNewTitle(''); setNewPriceUsd(''); setNewDesc(''); setNewImage(null); setActiveTab('home'); }
   };
 
-  const handleLogin = async (usernameOrUser, password, token) => {
-    // Si le premier argument est un objet user (venant de AntiPhishingLogin)
+  const handleLogin = async (usernameOrUser, passwordOrToken, tokenArg, totpCodeOpt = '') => {
+    // Si le premier argument est un objet user (venant de LoginPage ou AntiPhishingLogin)
     if (usernameOrUser && typeof usernameOrUser === 'object' && usernameOrUser.username) {
       const userObj = usernameOrUser;
-      localStorage.setItem('silkGenesis_session', JSON.stringify({user: userObj, status: 'success'}));
+      const token = passwordOrToken; // session_token passed by LoginPage
+      
+      localStorage.setItem('silkGenesis_session', JSON.stringify({
+        user: userObj, 
+        status: 'success', 
+        session_token: token
+      }));
+      
       setUser(userObj);
+      setSessionToken(token);
+      authFailureHandledRef.current = false;
       setBalance(userObj.balance || 0);
-      loadData();
-      return;
+      loadData(userObj);
+      return 'success';
     }
-    // Sinon login classique (username, password, token)
+    // Sinon login classique (username, password, token [, totp_code])
     const username = usernameOrUser;
+    const password = passwordOrToken;
+    const token = tokenArg;
+    const totp_code = typeof totpCodeOpt === 'string' ? totpCodeOpt.trim() : '';
     try {
-      const res = await fetch('/api/login', {
+      const payload = { username, password, pow_solution: token };
+      if (totp_code) payload.totp_code = totp_code;
+      const res = await fetch(silkGenesisApiUrl('/api/login'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password, pow_solution: token })
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
-      if (res.ok && data.user) {
+      if (res.status === 429) {
+        alert(data.message || data.detail || 'Too many attempts');
+        return 'fail';
+      }
+      if (res.ok && data.status === '2fa_required') {
+        return '2fa_required';
+      }
+      if (res.ok && data.status === '2fa_setup_required') {
+        alert('2FA setup is mandatory for this role. Complete setup now.');
+        return '2fa_setup_required';
+      }
+      if (res.status === 401 && data.detail === 'INVALID_2FA_CODE') {
+        return 'invalid_2fa';
+      }
+      if (res.ok && data.status === 'success' && data.user) {
+        if (data.anti_phishing_phrase) {
+          window.alert(
+            `Login successful.\n\nYour anti-phishing phrase:\n\n"${data.anti_phishing_phrase}"\n\nIf this does not match what you expect, log out immediately.`
+          );
+        }
         localStorage.setItem('silkGenesis_session', JSON.stringify(data));
         setUser(data.user);
+        setSessionToken(data.session_token);
+        authFailureHandledRef.current = false;
         setBalance(data.user.balance || 0);
-        loadData();
-      } else {
-        alert(data.detail || "Access Denied");
+        loadData(data.user);
+        return 'success';
       }
-    } catch(e) {
-      alert("SERVER ERROR: Cannot connect to backend");
+      alert(data.detail || data.message || 'Access Denied');
+      return 'fail';
+    } catch (e) {
+      alert('SERVER ERROR: Cannot connect to backend');
+      return 'fail';
     }
   };
 
   const handleRegister = async (username, password, token) => {
-    const res = await fetch('/api/register', {
+    const res = await fetch(silkGenesisApiUrl('/api/register'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password, pow_solution: token })
@@ -3827,27 +4865,47 @@ function App() {
     else { const d = await res.json(); alert(d.detail); return false; }
   };
 
-  const handleBuyProduct = async (listingId) => {
+  const handleBuyProduct = async (listingId, escrowMode = 'auto') => {
     if (!window.confirm("INITIATE ESCROW TRANSACTION?")) return;
-    const res = await fetch('/api/orders', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ listing_id: listingId, buyer: user.username })
-    });
-    if (res.ok) {
+    try {
+      const res = await authenticatedFetch('/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ listing_id: listingId, buyer: user.username, escrow_mode: escrowMode })
+      });
       const data = await res.json();
-      alert(`✅ ESCROW ACTIVATED!\n${data.message}\nOrder ID: ${data.order_id}`);
-      await loadData(); setActiveTab('orders');
-    } else { const err = await res.json(); alert(`ERROR: ${err.detail}`); }
+      if (res.ok && data?.order_id) {
+        const modeLabel = (data.escrow_mode || escrowMode || 'standard').toUpperCase();
+        alert(`✅ ESCROW ACTIVATED (${modeLabel})!\n${data.message}\nOrder ID: ${data.order_id}`);
+        await loadData();
+        setActiveTab('orders');
+        return;
+      }
+      if (data?.detail === 'INSUFFICIENT_FUNDS') {
+        alert("❌ Not enough XMR to buy this item.");
+        return;
+      }
+      if (data?.detail === 'PGP_REQUIRED_FOR_ORDER') {
+        alert("🔐 PGP required: buyer and vendor must both have a PGP public key before placing an order.");
+        return;
+      }
+      if (data?.detail === 'SESSION_TOKEN_REQUIRED' || data?.detail === 'INVALID_SESSION') {
+        alert("⏳ Session expired. Please log in again.");
+        return;
+      }
+      alert(`ERROR: ${data?.detail || 'ORDER_CREATION_FAILED'}`);
+    } catch (e) {
+      alert("SERVER ERROR");
+    }
   };
 
   const handleMarkShipped = async (orderId) => {
-    const res = await fetch(`/api/orders/${orderId}/mark-shipped`, { method: 'POST' });
+    const res = await authenticatedFetch(`/api/orders/${orderId}/mark-shipped`, { method: 'POST' });
     if (res.ok) { alert("📦 MARKED AS SHIPPED"); await loadData(); }
   };
 
   const handleCompleteOrder = async (orderId) => {
-    const res = await fetch(`/api/orders/${orderId}/complete`, { method: 'POST' });
+    const res = await authenticatedFetch(`/api/orders/${orderId}/complete`, { method: 'POST' });
     if (res.ok) { alert("✅ FUNDS RELEASED! Transferred to vendor."); await loadData(); }
   };
 
@@ -3923,6 +4981,155 @@ function App() {
     return filtered;
   }, [products, selectedCategory, searchQuery, categories]);
 
+  const trendingProducts = useMemo(
+    () => [...products].sort((a, b) => (b.sales || 0) - (a.sales || 0)).slice(0, 6),
+    [products]
+  );
+
+  const freshDrops = useMemo(() => {
+    const getTime = (p) => {
+      const t = Date.parse(p?.created_at || '');
+      return Number.isNaN(t) ? 0 : t;
+    };
+    return [...products].sort((a, b) => getTime(b) - getTime(a)).slice(0, 6);
+  }, [products]);
+
+  const staffCurated = useMemo(() => {
+    const getTime = (p) => {
+      const t = Date.parse(p?.created_at || '');
+      return Number.isNaN(t) ? 0 : t;
+    };
+    return [...products]
+      .sort((a, b) => {
+        const scoreA = ((a.sales || 0) * 3) + (getTime(a) / 1e12);
+        const scoreB = ((b.sales || 0) * 3) + (getTime(b) / 1e12);
+        return scoreB - scoreA;
+      })
+      .slice(0, 4);
+  }, [products]);
+
+  const spotlightVendors = useMemo(() => topVendors.slice(0, 3), [topVendors]);
+
+  const [showAdmin2FAModal, setShowAdmin2FAModal] = useState(false);
+  const [admin2FAPendingTab, setAdmin2FAPendingTab] = useState('admin_panel');
+  const [admin2FACode, setAdmin2FACode] = useState('');
+  const [admin2FALoading, setAdmin2FALoading] = useState(false);
+
+  const tryOpenAdminTab = useCallback(async (tab) => {
+    if (user?.role !== 'admin') return;
+    const localUntil = Number(localStorage.getItem('silkGenesis_admin_step_up_until') || 0);
+    if (localUntil > Date.now()) {
+      setActiveTab(tab);
+      return;
+    }
+    let token = sessionToken;
+    if (!token) {
+      try {
+        const raw = localStorage.getItem('silkGenesis_session');
+        if (raw) token = JSON.parse(raw).session_token || '';
+      } catch {}
+    }
+    if (!token) {
+      alert('Session expired. Please log in again.');
+      return;
+    }
+    try {
+      const r = await authenticatedFetch('/api/health');
+      const d = await r.json().catch(() => ({}));
+      const meta = d && typeof d.admin_step_up === 'object' ? d.admin_step_up : null;
+      if (r.status === 401) {
+        alert('Session expired. Please log in again.');
+        return;
+      }
+      if (!r.ok) {
+        if (r.status === 404) {
+          alert(
+            'API not found (404). Ensure the backend is running on port 5000 (uvicorn market_server:app) and the frontend uses the dev proxy (npm start) or set REACT_APP_API_BASE to the API origin (e.g. http://127.0.0.1:5000).'
+          );
+        } else {
+          alert(typeof d.detail === 'string' ? d.detail : 'Could not reach the API.');
+        }
+        return;
+      }
+      if (meta && meta.step_up_valid) {
+        setActiveTab(tab);
+        return;
+      }
+      const totpOn = meta ? !!meta.totp_enabled : !!user?.totp_enabled;
+      if (!totpOn) {
+        alert('Enable 2FA first: Identity tab → Two-factor authentication (2FA).');
+        setActiveTab('profile');
+        return;
+      }
+      if (meta && meta.totp_enabled) {
+        setUser(prev => (prev ? { ...prev, totp_enabled: true } : prev));
+      }
+      setAdmin2FAPendingTab(tab);
+      setAdmin2FACode('');
+      setShowAdmin2FAModal(true);
+    } catch {
+      if (!user?.totp_enabled) {
+        alert('Network error');
+        return;
+      }
+      setAdmin2FAPendingTab(tab);
+      setAdmin2FACode('');
+      setShowAdmin2FAModal(true);
+    }
+  }, [user, sessionToken, authenticatedFetch]);
+
+  const submitAdmin2FA = async () => {
+    const raw = String(admin2FACode || '').trim();
+    if (raw.length < 6) {
+      alert('Enter the 6-digit code from your authenticator app (or a backup code).');
+      return;
+    }
+    setAdmin2FALoading(true);
+    try {
+      const safe = raw.replace(/\s/g, '');
+      const jsonHeaders = { 'Content-Type': 'application/json' };
+      const verifyOpts = {
+        method: 'POST',
+        headers: jsonHeaders,
+        body: JSON.stringify({ username: user?.username, code: safe }),
+      };
+      let r = await authenticatedFetch('/api/2fa/verify', verifyOpts);
+      if (r.status === 404) {
+        const body = JSON.stringify({ totp_code: safe });
+        const postOpts = { method: 'POST', headers: jsonHeaders, body };
+        r = await authenticatedFetch('/api/health/admin-step-up', postOpts);
+        if (r.status === 404) {
+          r = await authenticatedFetch('/api/auth/admin-panel-unlock', postOpts);
+        }
+        if (r.status === 404) {
+          r = await authenticatedFetch('/api/session/admin-panel-unlock', postOpts);
+        }
+        if (r.status === 404) {
+          r = await authenticatedFetch('/api/admin/panel-unlock', postOpts);
+        }
+      }
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        const msg =
+          typeof d.detail === 'string'
+            ? d.detail
+            : typeof d.message === 'string'
+              ? d.message
+              : 'Invalid code';
+        alert(msg);
+        return;
+      }
+      localStorage.setItem('silkGenesis_admin_step_up_until', String(Date.now() + (4 * 3600 * 1000)));
+      setShowAdmin2FAModal(false);
+      setAdmin2FACode('');
+      setActiveTab(admin2FAPendingTab);
+    } catch {
+      alert('Network error');
+    } finally {
+      setAdmin2FALoading(false);
+    }
+  };
+
   if (!user) return <LoginPage onLogin={handleLogin} onRegister={handleRegister}/>;
 
   const currentCatObj = categories.find(c => c.name === selectedCategory);
@@ -3937,11 +5144,55 @@ function App() {
         />
       )}
 
+      {showAdmin2FAModal && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center p-4"
+          style={{ background: 'rgba(0,0,0,0.88)' }}
+        >
+          <div className="bg-[#0d0d0d] border border-amber-800/50 rounded-2xl p-6 max-w-md w-full shadow-2xl">
+            <h3 className="text-amber-500 text-sm font-black tracking-widest uppercase not-italic mb-1 flex items-center gap-2">
+              <Lock size={18} /> Admin 2FA verification
+            </h3>
+            <p className="text-gray-500 text-[11px] normal-case not-italic font-medium leading-relaxed mb-4">
+              Enter the 6-digit code from your authenticator app (or a backup code) to open the admin panel. Stays unlocked for about 4 hours after a successful check.
+            </p>
+            <input
+              type="text"
+              value={admin2FACode}
+              onChange={e => setAdmin2FACode(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && submitAdmin2FA()}
+              placeholder="000000"
+              className="w-full bg-black border border-amber-900/30 rounded-xl px-4 py-3 text-center text-2xl tracking-[0.4em] text-amber-500 font-mono not-italic outline-none focus:border-amber-600"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              autoFocus
+            />
+            <div className="flex gap-2 mt-4">
+              <button
+                type="button"
+                onClick={() => { setShowAdmin2FAModal(false); setAdmin2FACode(''); }}
+                className="flex-1 py-2.5 rounded-xl border border-white/10 text-gray-400 text-xs font-bold uppercase not-italic hover:bg-white/5"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={submitAdmin2FA}
+                disabled={admin2FALoading}
+                className="flex-1 py-2.5 rounded-xl bg-amber-600 text-black text-xs font-bold uppercase not-italic hover:bg-amber-500 disabled:opacity-50"
+              >
+                {admin2FALoading ? '…' : 'Verify'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* HEADER */}
       <header className="sticky top-0 z-50 bg-[#111111]/95 border-b border-amber-900/40 shadow-2xl backdrop-blur-md">
-        <AlphaBanner slotsUsed={5} />
-        <div className="max-w-[1500px] mx-auto flex justify-between items-center px-4 py-4">
-          <div className="w-[200px]">
+        <AlphaBanner slotsUsed={founderStats.claimed || 0} />
+        <div className="max-w-[1500px] mx-auto flex justify-between items-center px-6 py-4">
+          <div className="w-[260px] pl-3">
             <img src={Logo} alt="SilkGenesis" className="h-10 cursor-pointer hover:scale-105 transition-all" onClick={() => { setActiveTab('home'); setSelectedCategory('All'); }}/>
           </div>
 
@@ -3985,12 +5236,19 @@ function App() {
               <ArrowDownCircle size={12}/> DEPOSIT
             </button>
             <div className="text-right border-r border-amber-900/20 pr-4">
-              <p className="text-[9px] text-gray-500 uppercase">Vault</p>
-              <p className="text-base tracking-tighter">{(balance || 0).toFixed(4)} XMR</p>
+              <p className="text-[9px] text-gray-600 normal-case not-italic">
+                ${(((Number(balance) || 0) * (Number(xmrRate) || 0))).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </p>
+              <p className="text-base tracking-tighter">
+                {(Number(balance) || 0).toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 })} XMR
+              </p>
             </div>
             <div className={`px-3 py-1 rounded border shadow-lg text-[10px] ${user.role === 'admin' ? 'border-red-600 text-red-600' : user.role === 'vendor' ? 'border-purple-500 text-purple-500' : 'border-blue-500 text-blue-500'}`}>
               {user.role === 'admin' ? 'ADMIN' : user.role === 'vendor' ? 'VENDOR' : 'BUYER'}
             </div>
+            {user?.founder_vendor_badge && (
+              <FounderVendorBadge />
+            )}
             <button onClick={() => { localStorage.removeItem('silkGenesis_session'); setUser(null); }}
               className="bg-amber-900/10 border border-amber-600 px-3 py-1.5 rounded hover:bg-amber-600 transition-all font-black text-[10px]">
               Logout
@@ -4023,12 +5281,19 @@ function App() {
                 </span>
               )}
             </div>
-            <div onClick={() => setActiveTab('messages')}
+            <div onClick={() => {
+              if (pgpSetupRequired) {
+                alert('Complete mandatory PGP setup in Identity before using Messages.');
+                setActiveTab('profile');
+                return;
+              }
+              setActiveTab('messages');
+            }}
               className={`p-2.5 rounded-lg cursor-pointer flex items-center transition-all ${activeTab === 'messages' ? 'text-amber-500 bg-amber-900/10 border-l-4 border-amber-600' : 'hover:bg-white/5 text-gray-400'}`}>
               <MessageSquare className="mr-3" size={15}/> Messages
             </div>
             {user.role === 'admin' && (
-              <div onClick={() => setActiveTab('admin_panel')}
+              <div onClick={() => tryOpenAdminTab('admin_panel')}
                 className={`p-2.5 rounded-lg cursor-pointer flex items-center border border-red-900/20 transition-all ${activeTab === 'admin_panel' ? 'bg-red-900/20 text-red-500 border-l-4 border-red-600' : 'hover:bg-red-900/5 text-gray-400'}`}>
                 <Terminal className="mr-3" size={15}/> Control
               </div>
@@ -4051,7 +5316,11 @@ function App() {
             )}
             <div onClick={() => setActiveTab('profile')}
               className={`p-2.5 rounded-lg cursor-pointer flex items-center transition-all ${activeTab === 'profile' ? 'text-amber-500 bg-amber-900/10 border-l-4 border-amber-600' : 'hover:bg-white/5 text-gray-400'}`}>
-              <UserIcon className="mr-3" size={15}/> Identity
+              <Lock className="mr-3" size={15}/> Security
+            </div>
+            <div onClick={() => setActiveTab('wallet')}
+              className={`p-2.5 rounded-lg cursor-pointer flex items-center transition-all ${activeTab === 'wallet' ? 'text-amber-500 bg-amber-900/10 border-l-4 border-amber-600' : 'hover:bg-white/5 text-gray-400'}`}>
+              <Wallet className="mr-3" size={15}/> Wallet
             </div>
             <div onClick={() => setActiveTab('about')}
               className={`p-2.5 rounded-lg cursor-pointer flex items-center transition-all ${activeTab === 'about' ? 'text-amber-500 bg-amber-900/10 border-l-4 border-amber-600' : 'hover:bg-white/5 text-gray-400'}`}>
@@ -4101,12 +5370,12 @@ function App() {
 
           {/* ABOUT PAGE */}
           {activeTab === 'about' && (
-            <AboutPage onNavigate={(tab) => setActiveTab(tab)} />
+            <AboutPage onNavigate={(tab) => setActiveTab(tab === 'market' ? 'home' : tab)} />
           )}
 
           {/* CANARY PAGE */}
           {activeTab === 'canary' && (
-            <CanaryPage onNavigate={(tab) => setActiveTab(tab)} />
+            <CanaryPage onNavigate={(tab) => setActiveTab(tab === 'market' ? 'home' : tab)} />
           )}
 
           {/* HOME / MARKET */}
@@ -4148,9 +5417,12 @@ function App() {
               {/* TOP VENDORS - Only show on All/no search */}
               {selectedCategory === 'All' && !searchQuery && (
                 <div className="bg-gradient-to-r from-amber-900/10 to-transparent border border-amber-900/20 rounded-3xl p-8">
-                  <h2 className="text-amber-500 text-2xl font-black mb-6 flex items-center gap-3">
+                  <h2 className="text-amber-500 text-2xl font-black mb-2 flex items-center gap-3">
                     <Star size={24} className="fill-amber-500"/> Top Vendors
                   </h2>
+                  <p className="text-[10px] text-amber-300/85 mb-6">
+                    Founder slots claimed: {founderStats.claimed}/{founderStats.limit}
+                  </p>
                   <div className="grid grid-cols-4 gap-4">
                     {topVendors.map(vendor => (
                       <div key={vendor.username}
@@ -4160,6 +5432,11 @@ function App() {
                           {vendor.username[0]}
                         </div>
                         <h3 className="text-center text-white text-sm truncate group-hover:text-amber-500">{vendor.username}</h3>
+                        {vendor.founder_vendor_badge && (
+                          <div className="mt-2 flex justify-center">
+                            <FounderVendorBadge compact />
+                          </div>
+                        )}
                         <div className="flex items-center justify-center gap-1 mt-2 text-[10px] text-amber-600">
                           <Star size={12} className="fill-amber-600"/> {vendor.rating}
                         </div>
@@ -4170,53 +5447,36 @@ function App() {
                 </div>
               )}
 
-              {/* {/* TOP PRODUCTS - Only show on All/no search */}
+{/* {/* TOP PRODUCTS - Only show on All/no search */}
 {selectedCategory === 'All' && !searchQuery && (
   <div className="mb-10">
     <h2 className="text-white text-2xl font-black mb-6 flex items-center gap-3">
-      <Package size={24} className="text-amber-500"/> Top Vendors Picks
+      <Star size={24} className="text-amber-500"/> Staff Curated
     </h2>
-    <div className="flex flex-col gap-3">
-      {topProducts.map(p => (
-        <div key={p.id}
+    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+      {staffCurated.map(p => (
+        <div key={`curated-${p.id}`}
           onClick={() => { setSelectedProduct(p); setActiveTab('product-detail'); }}
-          className="bg-[#0a0a0a] border border-white/5 p-3 rounded-xl hover:border-amber-500/40 transition-all cursor-pointer group flex items-center shadow-lg">
-          
-          <div className="w-20 h-20 bg-black rounded-lg overflow-hidden flex-shrink-0 flex items-center justify-center border border-white/5">
+          className="bg-[#0a0a0a] border border-white/5 rounded-xl overflow-hidden hover:border-amber-500/40 transition-all cursor-pointer group shadow-lg">
+          <div className="h-40 bg-black overflow-hidden flex items-center justify-center border-b border-white/5">
             {p.image ? (
-              <img loading="lazy" src={p.image} className="w-full h-full object-cover group-hover:scale-110 transition-all" alt=""/>
+              <img loading="lazy" src={p.image} className="w-full h-full object-cover group-hover:scale-105 transition-all" alt=""/>
             ) : (
               <Package size={24} className="text-gray-800"/>
             )}
           </div>
-
-          <div className="flex-1 ml-4 overflow-hidden">
-            <div className="flex items-center gap-2 mb-0.5">
-              <span className="text-[8px] bg-amber-900/20 text-amber-600 px-1.5 py-0.5 rounded uppercase font-bold tracking-tighter">
-                {p.category}
+          <div className="p-4">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-[8px] bg-amber-900/20 text-amber-500 border border-amber-700/40 px-2 py-1 rounded uppercase font-black tracking-widest">
+                Editor's Choice
               </span>
-              {p.is_founder && (
-                <span className="text-[8px] bg-orange-500/10 text-orange-500 border border-orange-500/30 px-1.5 py-0.5 rounded uppercase font-black shadow-[0_0_8px_rgba(249,115,22,0.1)]">
-                  Founder
-                </span>
-              )}
+              <span className="text-[9px] text-gray-500">{p.sales || 0} sold</span>
             </div>
-            <h4 className="text-base text-white group-hover:text-amber-500 transition-colors truncate font-medium uppercase tracking-tight">
-              {p.title}
-            </h4>
-            <p className="text-[10px] text-gray-600 mt-0.5 flex items-center gap-1">
-              by <span className="text-gray-400 group-hover:text-amber-500 transition-colors">{p.vendor}</span>
-              <span className="text-gray-800">•</span>
-              <span>{p.sales || 0} sold</span>
-            </p>
-          </div>
-
-          <div className="text-right ml-4 pr-2">
-            <p className="text-xl text-amber-500 font-black tracking-tighter leading-none">
-              ${(parseFloat(p.price_xmr) * xmrRate).toFixed(2)}
-            </p>
-            <div className="text-[9px] text-amber-900 group-hover:text-amber-500 font-bold mt-1 transition-all uppercase tracking-widest">
-              View →
+            <h4 className="text-white text-sm truncate group-hover:text-amber-500">{p.title}</h4>
+            <p className="text-[10px] text-gray-600 mt-1 truncate">by <span className="text-gray-400">{p.vendor}</span></p>
+            <div className="mt-3 flex justify-between items-center">
+              <span className="text-amber-500 font-black">${(parseFloat(p.price_xmr) * xmrRate).toFixed(2)}</span>
+              <span className="text-[9px] text-amber-700 group-hover:text-amber-500 transition-all uppercase tracking-wider font-bold">View</span>
             </div>
           </div>
         </div>
@@ -4224,10 +5484,90 @@ function App() {
     </div>
   </div>
 )}
+{/* TRENDING + FRESH + SPOTLIGHT - homepage combo */}
+{selectedCategory === 'All' && !searchQuery && (
+  <>
+    <div className="mb-10">
+      <h2 className="text-white text-2xl font-black mb-6 flex items-center gap-3">
+        <TrendingUp size={24} className="text-green-500"/> Trending This Week
+      </h2>
+      {trendingProducts.length === 0 ? (
+        <div className="bg-[#111] border border-white/5 p-10 rounded-2xl text-center text-gray-600 text-sm">No trending products yet.</div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          {trendingProducts.map(p => (
+            <div key={`trend-${p.id}`}
+              onClick={() => { setSelectedProduct(p); setActiveTab('product-detail'); }}
+              className="bg-[#0a0a0a] border border-white/5 p-4 rounded-xl hover:border-green-500/40 transition-all cursor-pointer group">
+              <div className="h-40 bg-black rounded-lg mb-4 overflow-hidden flex items-center justify-center border border-white/5">
+                {p.image ? <img loading="lazy" src={p.image} className="w-full h-full object-cover group-hover:scale-105 transition-all" alt=""/> : <Package size={24} className="text-gray-800"/>}
+              </div>
+              <p className="text-[9px] text-gray-600 mb-1">{p.category}</p>
+              <h4 className="text-white text-sm truncate group-hover:text-amber-500">{p.title}</h4>
+              <div className="flex justify-between items-center mt-3">
+                <span className="text-amber-500 font-black">${(parseFloat(p.price_xmr) * xmrRate).toFixed(2)}</span>
+                <span className="text-[10px] text-green-500">{p.sales || 0} sold</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+
+    <div className="mb-10">
+      <h2 className="text-white text-2xl font-black mb-6 flex items-center gap-3">
+        <Zap size={24} className="text-cyan-500"/> Fresh Drops
+      </h2>
+      {freshDrops.length === 0 ? (
+        <div className="bg-[#111] border border-white/5 p-10 rounded-2xl text-center text-gray-600 text-sm">No fresh drops yet.</div>
+      ) : (
+        <div className="flex flex-col gap-3">
+          {freshDrops.map(p => (
+            <div key={`fresh-${p.id}`}
+              onClick={() => { setSelectedProduct(p); setActiveTab('product-detail'); }}
+              className="bg-[#0a0a0a] border border-white/5 p-3 rounded-xl hover:border-cyan-500/40 transition-all cursor-pointer group flex items-center">
+              <div className="w-16 h-16 bg-black rounded-lg overflow-hidden flex-shrink-0 flex items-center justify-center border border-white/5">
+                {p.image ? <img loading="lazy" src={p.image} className="w-full h-full object-cover group-hover:scale-110 transition-all" alt=""/> : <Package size={20} className="text-gray-800"/>}
+              </div>
+              <div className="flex-1 ml-4 overflow-hidden">
+                <p className="text-[8px] text-cyan-500 uppercase tracking-widest">New listing</p>
+                <h4 className="text-white text-sm truncate group-hover:text-amber-500">{p.title}</h4>
+                <p className="text-[10px] text-gray-600">by <span className="text-gray-400">{p.vendor}</span></p>
+              </div>
+              <div className="text-amber-500 font-black text-sm">${(parseFloat(p.price_xmr) * xmrRate).toFixed(2)}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+
+    <div className="mb-10">
+      <h2 className="text-white text-2xl font-black mb-6 flex items-center gap-3">
+        <ShieldCheck size={24} className="text-purple-500"/> Trusted Vendors Spotlight
+      </h2>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {spotlightVendors.map(vendor => (
+          <div key={`spot-${vendor.username}`}
+            onClick={() => { setSelectedVendor(vendor.username); setActiveTab('vendor-profile'); }}
+            className="bg-[#0a0a0a] border border-white/5 p-5 rounded-xl hover:border-purple-500/40 transition-all cursor-pointer">
+            <div className="w-14 h-14 rounded-full bg-gradient-to-br from-amber-900/20 to-purple-900/30 flex items-center justify-center text-amber-500 text-2xl font-black mb-3">
+              {vendor.username[0]}
+            </div>
+            <h4 className="text-white text-sm truncate">{vendor.username}</h4>
+            <div className="text-[10px] text-gray-500 mt-1">{vendor.sales || 0} sales • rating {vendor.rating || 0}</div>
+            <button className="mt-4 w-full bg-purple-900/20 border border-purple-700/40 text-purple-300 py-2 rounded-lg text-[10px] font-black uppercase">View Store</button>
+          </div>
+        ))}
+      </div>
+    </div>
+  </>
+)}
+
 {/* ALL / FILTERED PRODUCTS */}
+{!(selectedCategory === 'All' && !searchQuery) && (
 <div>
   <h2 className="text-white text-2xl font-black mb-6">
-    {selectedCategory === 'All' && !searchQuery ? 'Marketplace Inventory' : `${filteredProducts.length} Result${filteredProducts.length !== 1 ? 's' : ''}`}
+    {`${filteredProducts.length} Result${filteredProducts.length !== 1 ? 's' : ''}`}
   </h2>
   {filteredProducts.length === 0 ? (
     <div className="bg-[#111] border border-white/5 p-20 rounded-3xl text-center">
@@ -4273,7 +5613,7 @@ function App() {
               ${(parseFloat(p.price_xmr) * xmrRate).toFixed(2)}
             </p>
             <div className="text-[9px] text-zinc-700 group-hover:text-amber-500 font-bold mt-1 transition-all">
-              Details →
+              Details ->
             </div>
           </div>
         </div>
@@ -4281,6 +5621,7 @@ function App() {
     </div>
   )}
 </div>
+)}
             </div>
           )}
 
@@ -4304,7 +5645,7 @@ function App() {
               product={selectedProduct} user={user}
               xmrRate={xmrRate}
               onBack={() => setActiveTab('home')}
-              onBuy={() => { handleBuyProduct(selectedProduct.id); setActiveTab('orders'); }}
+              onBuy={(escrowMode) => { handleBuyProduct(selectedProduct.id, escrowMode); }}
               onContactVendor={() => { setShowGeneralChat(true); setChatVendor(selectedProduct.vendor); }}
               onViewVendor={() => { setSelectedVendor(selectedProduct.vendor); setActiveTab('vendor-profile'); }}
             />
@@ -4331,29 +5672,91 @@ function App() {
           {activeTab === 'profile' && (
             <div className="space-y-6">
               <ProfilePage
-                user={user} balance={balance} xmrRate={xmrRate}
+                user={user}
                 onUpdateAvatar={(img) => handleAction('/api/user/update-avatar', { username: user.username, avatar: img })}
                 onUpgrade={handleUpgradeVendor}
                 onDelete={deleteAccount}
-                onWithdraw={handleWithdraw}
+              />
+              <TwoFactorIdentityPanel
+                username={user?.username}
+                sessionToken={sessionToken}
+                onEnabled={() => setUser(prev => (prev ? { ...prev, totp_enabled: true } : prev))}
+                onDisabled={() => setUser(prev => (prev ? { ...prev, totp_enabled: false } : prev))}
               />
               {/* SECURITY SETTINGS */}
-              <PGPKeySection user={user} />
-              <AntiPhishingPhraseManager currentUser={user} />
+              <PGPKeySection
+                user={user}
+                currentToken={sessionToken}
+                onSessionExpired={() => {
+                  localStorage.removeItem('silkGenesis_session');
+                  setUser(null);
+                  setSessionToken(null);
+                  authFailureHandledRef.current = false;
+                  setActiveTab('home');
+                  alert('Session expired. Please login again.');
+                }}
+                onSetupComplete={() => setUser(prev => ({ ...prev, pgp_setup_completed: true }))}
+              />
+              <AntiPhishingPhraseManager currentUser={user} sessionToken={sessionToken} />
+              <SessionSecurityCenter currentUser={user} />
 
               {/* VENDOR LEVEL CARD */}
               {user?.role === 'vendor' && (
                 <VendorLevelCard username={user.username} />
               )}
 
-              {/* REFERRAL CARD */}
-              <ReferralCard username={user.username} />
             </div>
+          )}
+
+          {activeTab === 'wallet' && (
+            <WalletPage
+              user={user}
+              onWithdraw={handleWithdraw}
+              authenticatedFetch={authenticatedFetch}
+              balance={balance}
+              xmrRate={xmrRate}
+            />
           )}
 
           {/* ADMIN PANEL */}
           {activeTab === 'admin_panel' && user?.role === 'admin' && (
-            <AdminDashboard user={user} />
+            <AdminDashboard user={user} sessionToken={sessionToken} />
+          )}
+
+          {/* ADMIN CATEGORIES */}
+          {activeTab === 'admin_categories' && user?.role === 'admin' && (
+            <AdminCategories user={user} sessionToken={sessionToken} />
+          )}
+
+          {/* RELEASE FUNDS */}
+          {activeTab === 'release_funds' && (
+            (() => {
+              const releasableOrder = orders.find(
+                o => o.buyer === user.username && ['pending', 'escrow', 'shipped'].includes(o.status)
+              );
+              if (!releasableOrder) {
+                return (
+                  <div className="bg-[#111] p-8 border border-white/10 rounded-2xl text-center">
+                    <h3 className="text-white text-lg font-black mb-2">No releasable order</h3>
+                    <p className="text-gray-500 text-sm">You do not have any order in escrow/shipped state right now.</p>
+                  </div>
+                );
+              }
+              return (
+                <ReleaseFunds
+                  order={releasableOrder}
+                  user={user}
+                  onReleased={async () => {
+                    await loadData();
+                    setActiveTab('orders');
+                  }}
+                  onDispute={(orderId) => {
+                    openDisputeModal(orderId);
+                    setActiveTab('orders');
+                  }}
+                />
+              );
+            })()
           )}
 
           {/* MY LISTINGS TAB */}
@@ -4418,7 +5821,7 @@ function App() {
                         }}
                         className="w-full bg-black border border-white/10 p-4 rounded-xl text-white outline-none text-sm"
                       >
-                        <option value="">— Select Section —</option>
+                        <option value="">- Select Section -</option>
                         {categories.filter(c => !c.parent).map(c => (
                           <option key={c.name} value={c.name}>{c.icon} {c.name}</option>
                         ))}
@@ -4432,7 +5835,7 @@ function App() {
                         onChange={e => setNewCat(e.target.value)}
                         className="w-full bg-black border border-white/10 p-4 rounded-xl text-white outline-none text-sm"
                       >
-                        <option value="">— Select Subsection —</option>
+                        <option value="">- Select Subsection -</option>
                         {(() => {
                           const selectedParent = categories.find(c => c.name === newCat)?.parent ||
                             (categories.find(c => c.name === newCat && !c.parent) ? newCat : null);
@@ -4478,7 +5881,7 @@ function App() {
                           <div className="text-center">
                             <Camera size={32} className="text-gray-600 mx-auto mb-2"/>
                             <p className="text-[10px] text-gray-500">Click to upload image</p>
-                            <p className="text-[9px] text-gray-700 mt-1">JPG, PNG, GIF — Max 5MB</p>
+                            <p className="text-[9px] text-gray-700 mt-1">JPG, PNG, GIF - Max 5MB</p>
                           </div>
                         )}
                       </label>
@@ -4533,12 +5936,16 @@ function App() {
         buyer={user?.username}
         vendor={chatVendor}
         currentUser={user?.username}
+        currentToken={sessionToken}
+        authFetch={authenticatedFetch}
       />
       <OrderChatModal
         isOpen={showOrderChat}
         onClose={() => setShowOrderChat(false)}
         orderId={selectedOrderId}
         currentUser={user?.username}
+        currentToken={sessionToken}
+        authFetch={authenticatedFetch}
       />
 
       {/* ===== DISPUTE MODAL ===== */}
@@ -4626,3 +6033,6 @@ function App() {
 }
 
 export default App;
+
+
+

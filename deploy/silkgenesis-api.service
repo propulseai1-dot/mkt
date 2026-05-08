@@ -1,0 +1,19 @@
+[Unit]
+Description=SilkGenesis API (uvicorn / market_server)
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/silkgenesis/api-service
+EnvironmentFile=-/opt/silkgenesis/.env
+Environment=SILKGENESIS_DATA_DIR=/var/lib/silkgenesis
+ExecStart=/opt/silkgenesis/venv/bin/python -m uvicorn market_server:app --host 127.0.0.1 --port 5000 --proxy-headers
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,3 +1,36 @@
+# ============================================================
+# SILKGENESIS - TOR CONFIGURATION OPTIMISEE
+# ============================================================
+
 DataDirectory /var/lib/tor
+Log notice file /var/log/tor/notices.log
+
+# Hidden Service v3 (ed25519 - le plus sécurisé)
 HiddenServiceDir /var/lib/tor/silkgenesis_service/
-HiddenServicePort 80 frontend:3000
+HiddenServiceVersion 3
+HiddenServicePort 80 127.0.0.1:80
+
+# Performance Tor
+NumEntryGuards 4
+NumDirectoryGuards 3
+CircuitBuildTimeout 30
+LearnCircuitBuildTimeout 0
+
+# NOTE: `ClientOnly` / SOCKS hardening options concernent surtout l'utilisation client SOCKS.
+# Pour un service onion + nginx sur la meme machine, ces options peuvent empecher Tor
+# d'etablir les circuits necessaires au bon fonctionnement du hidden service.
+
+# Désactiver les statistiques (vie privée)
+DirReqStatistics 0
+ExtraInfoStatistics 0
+HiddenServiceStatistics 0
+
+# Isolation des circuits (utile surtout pour un client Tor SOCKS).
+# Si le hidden service ne publie pas ou les circuits HS echouent, commenter ces lignes.
+# IsolateClientAddr 1
+# IsolateClientProtocol 1
+# IsolateDestAddr 1
+# IsolateDestPort 1
+
+# Sandbox (Linux seulement)
+# Sandbox 1

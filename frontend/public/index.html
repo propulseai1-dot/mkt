@@ -4,9 +4,28 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>SilkGenesis | Decentralized Market</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Tailwind CSS - local, pas de clearnet -->
+    <script src="%PUBLIC_URL%/tailwind.js"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              amber: {
+                500: '#f59e0b',
+                600: '#d97706',
+                700: '#b45309',
+                800: '#92400e',
+                900: '#78350f',
+              }
+            }
+          }
+        }
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>
-  </body>
+  <script src="%PUBLIC_URL%/pgp_components.js"></script>
+</body>
 </html>

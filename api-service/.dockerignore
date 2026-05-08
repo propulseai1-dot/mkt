@@ -1,0 +1,44 @@
+# Ne pas copier dans l'image Docker de production (surface d'attaque + bruit)
+__pycache__/
+*.py[cod]
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+env/
+
+# Scripts one-off, patches, diagnostics (non requis pour uvicorn market_server)
+inject_*.py
+patch_*.py
+*_inject.py
+pgp_inject.py
+pgp_patch*.py
+xmr_patch*.py
+do_patch.py
+check_*.py
+find_*.py
+test_*.py
+*_test_server.py
+simple_test_server.py
+complete_server.py
+working_server.py
+simple_server.py
+seed_*.py
+promote_*.py
+reset_*.py
+fix_*.py
+verify_*.py
+restore_*.py
+write_*.py
+run_audit.ps1
+*.ps1
+*.bat
+*.log
+logs/
+
+# Données locales (montées par volume ou générées au runtime)
+*.db
+*.db-shm
+*.db-wal
+users_persist.json
+.rpc_credentials

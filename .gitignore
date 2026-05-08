@@ -1,4 +1,88 @@
-node_modules
-dist
-.env
+# ============================================================
+# SILKGENESIS - .gitignore
+# IMPORTANT: Ne jamais commiter les fichiers sensibles!
+# ============================================================
+
+# Node.js
+node_modules/
+dist/
+build/
 .DS_Store
+
+# Variables d'environnement
+.env
+.env.*
+*.env
+
+# ============================================================
+# SECURITE CRITIQUE - JAMAIS sur GitHub
+# ============================================================
+
+# Credentials RPC Monero (user:pass pour le wallet RPC)
+.rpc_credentials
+api-service/.rpc_credentials
+
+# Fichiers wallet Monero (clés privées chiffrées)
+monero-data/silkgenesis_wallet
+monero-data/silkgenesis_wallet.keys
+monero-data/silkgenesis_mainnet
+monero-data/silkgenesis_mainnet.keys
+monero-data/*.keys
+monero-data/*.wallet
+monero-cli/wallets/
+
+# Bases de données (données utilisateurs)
+*.db
+*.sqlite
+*.sqlite3
+api-service/silkgenesis.db
+api-service/users_persist.json
+api-service/vendor_listings.json
+
+# Credentials admin (généré par generate_admin_password.ps1)
+ADMIN_CREDENTIALS.txt
+
+# Logs financiers (transactions internes)
+api-service/logs/
+logs/
+*.log
+
+# Clés PGP et secrets
+*.pem
+*.key
+*.p12
+*.pfx
+private_key*
+secret*
+
+# ============================================================
+# PYTHON
+# ============================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+.Python
+venv/
+env/
+.venv/
+pip-log.txt
+
+# ============================================================
+# DIVERS
+# ============================================================
+.idea/
+.vscode/settings.json
+*.swp
+*.swo
+Thumbs.db
+
+# Noeud Monero stagenet (donnees lourdes)
+stagenet-lmdb/
+
+# Wallets multisig (cles) — deja partiellement couvert par monero
+api-service/multisig_wallets/
+
+# Tor hidden service state (NEVER commit)
+gateway/tor-data/
+gateway/tor-logs/

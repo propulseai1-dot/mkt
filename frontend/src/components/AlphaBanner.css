@@ -1,72 +1,109 @@
 .alpha-banner {
   position: relative;
   width: 100%;
-  background: linear-gradient(90deg, #0a0a0a 0%, #111111 45%, #0a0a0a 100%);
-  border-bottom: 1px solid rgba(245, 158, 11, 0.45);
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(245, 158, 11, 0.08) inset;
-  padding: 10px 20px;
+  background: linear-gradient(105deg, rgba(10, 10, 10, 0.96) 0%, rgba(23, 23, 23, 0.96) 40%, rgba(10, 10, 10, 0.96) 100%);
+  border-bottom: 1px solid rgba(245, 158, 11, 0.38);
+  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(245, 158, 11, 0.12) inset;
+  padding: 12px 20px 10px;
   margin: 0 0 12px 0;
   z-index: 1;
-  font-family: 'Courier New', Courier, monospace;
-  backdrop-filter: blur(4px);
+  font-family: Inter, "Segoe UI", Roboto, Arial, sans-serif;
+  backdrop-filter: blur(7px);
 }
 
 .alpha-content {
   display: flex;
-  justify-content: center;
+  justify-content: space-between;
   align-items: center;
-  gap: 20px;
+  gap: 24px;
   max-width: 1200px;
   margin: 0 auto;
 }
 
+.alpha-left {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
 .status-tag {
-  color: #f59e0b;
-  font-weight: bold;
-  letter-spacing: 2px;
-  animation: pulse 2s infinite;
-  text-shadow: 0 0 8px rgba(245, 158, 11, 0.35);
+  color: #fbbf24;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  text-shadow: 0 0 10px rgba(251, 191, 36, 0.28);
 }
 
 .main-text {
-  color: #d1d5db;
+  color: #e5e7eb;
   margin: 0;
-  font-size: 0.95rem;
+  font-size: 0.9rem;
+  line-height: 1.35;
   text-shadow: 0 0 6px rgba(0, 0, 0, 0.35);
 }
 
 .brand-name {
   color: #f59e0b;
-  font-weight: bold;
-  text-transform: uppercase;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+}
+
+.alpha-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .slots-tag {
-  background: rgba(245, 158, 11, 0.08);
+  background: rgba(245, 158, 11, 0.12);
   border: 1px solid rgba(245, 158, 11, 0.4);
-  padding: 4px 10px;
-  border-radius: 4px;
+  padding: 6px 12px;
+  border-radius: 999px;
   color: #fbbf24;
-  font-size: 0.85rem;
-  box-shadow: 0 0 10px rgba(245, 158, 11, 0.18);
+  font-size: 0.78rem;
+  font-weight: 600;
+  box-shadow: 0 0 14px rgba(245, 158, 11, 0.2);
+}
+
+.slots-left {
+  color: #d1d5db;
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .count {
-  font-weight: bold;
+  font-weight: 800;
 }
 
-/* Petit effet de pulsation pour attirer l'oeil */
-@keyframes pulse {
-  0% { opacity: 1; }
-  50% { opacity: 0.6; }
-  100% { opacity: 1; }
+.alpha-progress-track {
+  margin: 10px auto 0;
+  max-width: 1200px;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.alpha-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #f59e0b, #fbbf24);
+  box-shadow: 0 0 14px rgba(245, 158, 11, 0.45);
+  transition: width 0.3s ease;
 }
 
 @media (max-width: 960px) {
   .alpha-content {
     flex-direction: column;
-    gap: 8px;
-    text-align: center;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .alpha-right {
+    width: 100%;
+    justify-content: space-between;
   }
 
   .main-text {

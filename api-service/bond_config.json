@@ -1,0 +1,212 @@
+{
+  "Cannabis": {
+    "xmr": 1.5,
+    "usd_equiv": 150,
+    "risk": "medium",
+    "color": "#22c55e"
+  },
+  "Stimulants": {
+    "xmr": 2.5,
+    "usd_equiv": 250,
+    "risk": "high",
+    "color": "#f59e0b"
+  },
+  "Psychedelics": {
+    "xmr": 2.0,
+    "usd_equiv": 200,
+    "risk": "medium",
+    "color": "#8b5cf6"
+  },
+  "Opioids": {
+    "xmr": 8.0,
+    "usd_equiv": 800,
+    "risk": "critical",
+    "color": "#ef4444"
+  },
+  "Benzos": {
+    "xmr": 2.5,
+    "usd_equiv": 250,
+    "risk": "high",
+    "color": "#f59e0b"
+  },
+  "Dissociatives": {
+    "xmr": 2.0,
+    "usd_equiv": 200,
+    "risk": "medium",
+    "color": "#8b5cf6"
+  },
+  "Empathogens": {
+    "xmr": 1.5,
+    "usd_equiv": 150,
+    "risk": "medium",
+    "color": "#22c55e"
+  },
+  "Steroids": {
+    "xmr": 1.0,
+    "usd_equiv": 100,
+    "risk": "low",
+    "color": "#3b82f6"
+  },
+  "Prescription": {
+    "xmr": 2.5,
+    "usd_equiv": 250,
+    "risk": "high",
+    "color": "#f59e0b"
+  },
+  "Fraud": {
+    "xmr": 3.0,
+    "usd_equiv": 300,
+    "risk": "high",
+    "color": "#ef4444"
+  },
+  "Carding": {
+    "xmr": 3.0,
+    "usd_equiv": 300,
+    "risk": "high",
+    "color": "#ef4444"
+  },
+  "Bank Accounts": {
+    "xmr": 3.0,
+    "usd_equiv": 300,
+    "risk": "high",
+    "color": "#ef4444"
+  },
+  "PayPal / Cashapp": {
+    "xmr": 2.0,
+    "usd_equiv": 200,
+    "risk": "medium",
+    "color": "#f59e0b"
+  },
+  "Identity Docs": {
+    "xmr": 3.0,
+    "usd_equiv": 300,
+    "risk": "high",
+    "color": "#ef4444"
+  },
+  "Counterfeit": {
+    "xmr": 2.5,
+    "usd_equiv": 250,
+    "risk": "high",
+    "color": "#f59e0b"
+  },
+  "Digital Goods": {
+    "xmr": 1.5,
+    "usd_equiv": 150,
+    "risk": "low",
+    "color": "#3b82f6"
+  },
+  "Accounts": {
+    "xmr": 1.0,
+    "usd_equiv": 100,
+    "risk": "low",
+    "color": "#3b82f6"
+  },
+  "Malware / RATs": {
+    "xmr": 2.0,
+    "usd_equiv": 200,
+    "risk": "medium",
+    "color": "#f59e0b"
+  },
+  "Exploits / 0day": {
+    "xmr": 3.0,
+    "usd_equiv": 300,
+    "risk": "high",
+    "color": "#ef4444"
+  },
+  "eBooks / Guides": {
+    "xmr": 0.5,
+    "usd_equiv": 50,
+    "risk": "low",
+    "color": "#22c55e"
+  },
+  "Software / Keys": {
+    "xmr": 1.0,
+    "usd_equiv": 100,
+    "risk": "low",
+    "color": "#3b82f6"
+  },
+  "Services": {
+    "xmr": 1.5,
+    "usd_equiv": 150,
+    "risk": "medium",
+    "color": "#8b5cf6"
+  },
+  "Hacking": {
+    "xmr": 2.0,
+    "usd_equiv": 200,
+    "risk": "medium",
+    "color": "#f59e0b"
+  },
+  "DDoS": {
+    "xmr": 2.0,
+    "usd_equiv": 200,
+    "risk": "medium",
+    "color": "#f59e0b"
+  },
+  "Money Laundering": {
+    "xmr": 3.0,
+    "usd_equiv": 300,
+    "risk": "high",
+    "color": "#ef4444"
+  },
+  "Crypto Mixing": {
+    "xmr": 2.0,
+    "usd_equiv": 200,
+    "risk": "medium",
+    "color": "#f59e0b"
+  },
+  "Escrow Service": {
+    "xmr": 1.5,
+    "usd_equiv": 150,
+    "risk": "low",
+    "color": "#3b82f6"
+  },
+  "Weapons": {
+    "xmr": 5.0,
+    "usd_equiv": 500,
+    "risk": "critical",
+    "color": "#ef4444"
+  },
+  "Firearms": {
+    "xmr": 5.0,
+    "usd_equiv": 500,
+    "risk": "critical",
+    "color": "#ef4444"
+  },
+  "Ammunition": {
+    "xmr": 3.0,
+    "usd_equiv": 300,
+    "risk": "high",
+    "color": "#ef4444"
+  },
+  "Knives / Blades": {
+    "xmr": 1.5,
+    "usd_equiv": 150,
+    "risk": "medium",
+    "color": "#f59e0b"
+  },
+  "Other": {
+    "xmr": 1.0,
+    "usd_equiv": 100,
+    "risk": "low",
+    "color": "#6b7280"
+  },
+  "Jewelry / Luxury": {
+    "xmr": 1.0,
+    "usd_equiv": 100,
+    "risk": "low",
+    "color": "#6b7280"
+  },
+  "Electronics": {
+    "xmr": 1.0,
+    "usd_equiv": 100,
+    "risk": "low",
+    "color": "#6b7280"
+  },
+  "default": {
+    "xmr": 2.0,
+    "usd_equiv": 200,
+    "risk": "medium",
+    "color": "#6b7280"
+  }
+}
