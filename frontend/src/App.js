@@ -2845,7 +2845,7 @@ function ProfilePage({ user, onUpdateAvatar, onUpgrade, onDelete }) {
           </div>
           {user?.role === 'buyer' && (
             <button onClick={onUpgrade} className="bg-amber-600 text-black px-6 py-3 rounded-xl text-[11px] hover:bg-amber-400 transition-all flex items-center gap-2 shadow-xl">
-              <Zap size={14}/> Become a Seller ($200)
+              <Zap size={14}/> Become a Seller ($400)
             </button>
           )}
         </div>
@@ -5015,12 +5015,12 @@ function App() {
   };
 
   const handleUpgradeVendor = async () => {
-    const cost = (200 / xmrRate).toFixed(4);
+    const cost = (400 / xmrRate).toFixed(4);
     if (balance < cost) {
-      alert(`❌ INSUFFICIENT FUNDS\n\nRequired: ${cost} XMR ($200)\nYour balance: ${balance.toFixed(4)} XMR\n\nPlease deposit more XMR first.`);
+      alert(`❌ INSUFFICIENT FUNDS\n\nRequired: ${cost} XMR ($400)\nYour balance: ${balance.toFixed(4)} XMR\n\nPlease deposit more XMR first.`);
       return;
     }
-    if (!window.confirm(`VENDOR UPGRADE\n\nCost: ${cost} XMR ($200)\nYour balance: ${balance.toFixed(4)} XMR\n\nYour request will be sent to admin for approval.\n\nProceed?`)) return;
+    if (!window.confirm(`VENDOR UPGRADE\n\nCost: ${cost} XMR ($400)\nYour balance: ${balance.toFixed(4)} XMR\n\nYour request will be sent to admin for approval.\n\nProceed?`)) return;
     const res = await fetch('/api/upgrade-vendor', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

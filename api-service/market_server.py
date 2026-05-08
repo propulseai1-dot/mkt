@@ -3108,10 +3108,15 @@ def upgrade_vendor(data: dict, session: dict = Depends(get_current_session)):
     if username not in users_db:
         return {"detail": "USER_NOT_FOUND"}, 404
     
-    # Calculer le cout en XMR (200$ / prix XMR)
-    # On utilise un taux fixe de 165$ pour la demo
-    xmr_rate = 165.0
-    cost_xmr = 200.0 / xmr_rate  # ~1.21 XMR
+    # Calculer le cout en XMR (400$ / prix XMR marche reel).
+    oracle = get_prices(max_age_sec=120) or {}
+    xmr_rate = float(oracle.get("xmr_usd") or 0) if oracle else 0.0
+    if xmr_rate <= 0:
+        xmr_rate = float((_price_cache.get("xmr") or {}).get("usd") or 0)
+    if xmr_rate <= 0:
+        # Fallback de securite si l'oracle est indisponible.
+        xmr_rate = 165.0
+    cost_xmr = 400.0 / xmr_rate
 
     with funds_rlock:
         u = users_db[username]
