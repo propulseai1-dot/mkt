@@ -5,7 +5,7 @@ import {
   Layers, Trash2, CheckCircle, XCircle, Zap, UserPlus, DollarSign, 
   UserMinus, Copy, Home, MessageSquare, PlusCircle, Crown,
   User as UserIcon, Package, ArrowUpCircle, ArrowDownCircle, Lock,
-  Search, Filter, Tag, Unlock, Key, Globe
+  Search, Filter, Tag, Unlock, Key, Globe, Rocket
 } from 'lucide-react';
 import Logo from './Silk_logo.png';
 import VendorDashboard from './VendorDashboard';
@@ -14,6 +14,7 @@ import AdminDashboard from './AdminDashboard';
 import ReleaseFunds from './ReleaseFunds';
 import AboutPage from './AboutPage';
 import CanaryPage from './CanaryPage';
+import BecomeVendorPage from './BecomeVendorPage';
 import AlphaBanner from './components/AlphaBanner';
 import { TwoFactorSetup } from './TwoFactorSetup';
 import { silkApiUrl as silkGenesisApiUrl } from './silkApi';
@@ -2845,7 +2846,7 @@ function ProfilePage({ user, onUpdateAvatar, onUpgrade, onDelete }) {
           </div>
           {user?.role === 'buyer' && (
             <button onClick={onUpgrade} className="bg-amber-600 text-black px-6 py-3 rounded-xl text-[11px] hover:bg-amber-400 transition-all flex items-center gap-2 shadow-xl">
-              <Zap size={14}/> Become a Seller ($400)
+              <Zap size={14}/> Upgrade vendeur
             </button>
           )}
         </div>
@@ -4771,6 +4772,13 @@ function App() {
     }
   }, [activeTab, user]);
 
+  useEffect(() => {
+    if (!user) return;
+    if (user.role !== 'buyer' && activeTab === 'become_vendor') {
+      setActiveTab('home');
+    }
+  }, [activeTab, user]);
+
   const handleAction = async (url, body) => {
     try {
       const res = await authenticatedFetch(`${url}`, {
@@ -5350,6 +5358,14 @@ function App() {
               className={`p-2.5 rounded-lg cursor-pointer flex items-center transition-all ${activeTab === 'home' ? 'text-amber-500 bg-amber-900/10 border-l-4 border-amber-600' : 'hover:bg-white/5 text-gray-400'}`}>
               <Home className="mr-3" size={15}/> Market
             </div>
+            {user.role === 'buyer' && (
+              <div
+                onClick={() => setActiveTab('become_vendor')}
+                className={`p-2.5 rounded-lg cursor-pointer flex items-center border border-amber-900/20 transition-all ${activeTab === 'become_vendor' ? 'text-amber-500 bg-amber-900/15 border-l-4 border-amber-600' : 'hover:bg-amber-900/5 text-gray-400'}`}
+              >
+                <Rocket className="mr-3" size={15} /> Upgrade vendeur
+              </div>
+            )}
             <div onClick={() => setActiveTab('orders')}
               className={`p-2.5 rounded-lg cursor-pointer flex items-center transition-all ${activeTab === 'orders' ? 'text-amber-500 bg-amber-900/10 border-l-4 border-amber-600' : 'hover:bg-white/5 text-gray-400'}`}>
               <Shield className="mr-3" size={15}/> Orders
@@ -5449,6 +5465,15 @@ function App() {
           {/* ABOUT PAGE */}
           {activeTab === 'about' && (
             <AboutPage onNavigate={(tab) => setActiveTab(tab === 'market' ? 'home' : tab)} />
+          )}
+
+          {/* BECOME VENDOR (buyer only) */}
+          {activeTab === 'become_vendor' && user?.role === 'buyer' && (
+            <BecomeVendorPage
+              xmrRate={xmrRate}
+              balance={balance}
+              onUpgrade={handleUpgradeVendor}
+            />
           )}
 
           {/* CANARY PAGE */}

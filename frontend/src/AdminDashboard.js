@@ -70,6 +70,13 @@ export default function AdminDashboard({ user, sessionToken: sessionTokenProp })
   const [bannerForm, setBannerForm] = useState({ message: '', type: 'info', color: 'amber', active: true });
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [createUserForm, setCreateUserForm] = useState({ username: '', password: '', role: 'buyer' });
+  const [cryptoPriceForm, setCryptoPriceForm] = useState({
+    enabled: false,
+    xmr_usd: '165',
+    btc_usd: '74000',
+  });
+  const [cryptoPriceMeta, setCryptoPriceMeta] = useState(null);
+  const [cryptoPricesSaving, setCryptoPricesSaving] = useState(false);
   const listingImageInputRef = useRef(null);
   const [listingImageTargetId, setListingImageTargetId] = useState(null);
   const sessionToken = sessionTokenProp || (() => {
@@ -266,6 +273,70 @@ export default function AdminDashboard({ user, sessionToken: sessionTokenProp })
     }
   };
 
+  const loadCryptoPricesConfig = useCallback(async () => {
+    try {
+      const r = await adminFetch('/admin/crypto-prices-config');
+      const d = await r.json();
+      if (!r.ok) {
+        if (d?.detail) showMsg(String(d.detail), 'error');
+        return;
+      }
+      setCryptoPriceForm({
+        enabled: !!d.enabled,
+        xmr_usd: d.xmr_usd != null ? String(d.xmr_usd) : '165',
+        btc_usd: d.btc_usd != null ? String(d.btc_usd) : '74000',
+      });
+      setCryptoPriceMeta({
+        effective_source: d.effective_source,
+        last_update: d.last_update,
+      });
+    } catch {
+      showMsg('Impossible de charger la config des prix', 'error');
+    }
+  }, [adminFetch]);
+
+  useEffect(() => {
+    if (tab !== 'prices') return undefined;
+    loadCryptoPricesConfig();
+    return undefined;
+  }, [tab, loadCryptoPricesConfig]);
+
+  const saveCryptoPrices = async () => {
+    const xmr = parseFloat(String(cryptoPriceForm.xmr_usd).replace(',', '.'));
+    const btc = parseFloat(String(cryptoPriceForm.btc_usd).replace(',', '.'));
+    if (!(xmr > 0 && btc > 0 && Number.isFinite(xmr) && Number.isFinite(btc))) {
+      showMsg('XMR et BTC USD doivent être des nombres positifs', 'error');
+      return;
+    }
+    setCryptoPricesSaving(true);
+    try {
+      const r = await adminFetch('/admin/crypto-prices-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          enabled: cryptoPriceForm.enabled,
+          xmr_usd: xmr,
+          btc_usd: btc,
+        }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        showMsg(d.detail || d.error || 'Erreur lors de l’enregistrement', 'error');
+        return;
+      }
+      showMsg(
+        cryptoPriceForm.enabled
+          ? 'Prix manuels activés et enregistrés'
+          : 'Mode automatique : prix enregistrés (oracle/CoinGecko si pas manuel)'
+      );
+      loadCryptoPricesConfig();
+    } catch {
+      showMsg('Erreur réseau', 'error');
+    } finally {
+      setCryptoPricesSaving(false);
+    }
+  };
+
   const tabs = [
     { id: 'overview', label: '📊 Overview', icon: BarChart2 },
     { id: 'disputes', label: `⚖️ Disputes${disputes.filter(d => d.status === 'open').length > 0 ? ` (${disputes.filter(d => d.status === 'open').length})` : ''}`, icon: AlertTriangle },
@@ -274,6 +345,7 @@ export default function AdminDashboard({ user, sessionToken: sessionTokenProp })
     { id: 'orders', label: '📦 Orders', icon: ShoppingCart },
     { id: 'vendors', label: `🏪 Vendors${sellerReqs.length > 0 ? ` (${sellerReqs.length})` : ''}`, icon: UserCheck },
     { id: 'categories', label: '🗂️ Categories', icon: Package },
+    { id: 'prices', label: '💲 Prix crypto', icon: DollarSign },
     { id: 'liquidity', label: '💧 Liquidity & Withdrawals', icon: DollarSign },
     { id: 'system', label: '⚙️ System', icon: Terminal },
   ];
@@ -757,6 +829,88 @@ export default function AdminDashboard({ user, sessionToken: sessionTokenProp })
         {/* ===== CATEGORIES ===== */}
         {tab === 'categories' && (
           <AdminCategories user={user} sessionToken={sessionToken} />
+        )}
+
+        {/* ===== PRIX CRYPTO (manuel admin) ===== */}
+        {tab === 'prices' && (
+          <div style={{ maxWidth: 560 }}>
+            <div style={s.sectionTitle}>
+              <TrendingUp size={14} /> Prix spot USD (XMR / BTC)
+            </div>
+            <p style={{ fontSize: 12, color: '#666', marginBottom: 16, lineHeight: 1.5 }}>
+              Quand le mode manuel est activé, ces valeurs remplacent l’oracle et CoinGecko pour l’affichage public,
+              le taux des annonces et le calcul du upgrade vendeur (400&nbsp;$ équivalent XMR).
+            </p>
+            <div style={{ background: '#0d0d1a', border: '1px solid #1a1a2e', borderRadius: 10, padding: 16 }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={cryptoPriceForm.enabled}
+                  onChange={e => setCryptoPriceForm(f => ({ ...f, enabled: e.target.checked }))}
+                  style={{ width: 18, height: 18, accentColor: '#9b59b6' }}
+                />
+                <span style={{ fontSize: 13, color: '#ccc' }}>Utiliser ces prix manuellement (désactive oracle / clearnet pour l’affichage)</span>
+              </label>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
+                <div>
+                  <label style={{ fontSize: 11, color: '#555', display: 'block', marginBottom: 4 }}>XMR / USD</label>
+                  <input
+                    style={s.input}
+                    type="text"
+                    inputMode="decimal"
+                    value={cryptoPriceForm.xmr_usd}
+                    onChange={e => setCryptoPriceForm(f => ({ ...f, xmr_usd: e.target.value }))}
+                    placeholder="165.00"
+                  />
+                </div>
+                <div>
+                  <label style={{ fontSize: 11, color: '#555', display: 'block', marginBottom: 4 }}>BTC / USD</label>
+                  <input
+                    style={s.input}
+                    type="text"
+                    inputMode="decimal"
+                    value={cryptoPriceForm.btc_usd}
+                    onChange={e => setCryptoPriceForm(f => ({ ...f, btc_usd: e.target.value }))}
+                    placeholder="74000.00"
+                  />
+                </div>
+              </div>
+              {cryptoPriceMeta && (
+                <div style={{ fontSize: 11, color: '#555', marginBottom: 12, fontFamily: 'monospace' }}>
+                  Source effective actuelle :{' '}
+                  <span style={{ color: '#9b59b6' }}>{cryptoPriceMeta.effective_source || '—'}</span>
+                  {cryptoPriceMeta.last_update != null && (
+                    <>
+                      {' · '}
+                      maj{' '}
+                      {new Date(
+                        typeof cryptoPriceMeta.last_update === 'number'
+                          ? cryptoPriceMeta.last_update * 1000
+                          : cryptoPriceMeta.last_update
+                      ).toLocaleString()}
+                    </>
+                  )}
+                </div>
+              )}
+              <button
+                type="button"
+                disabled={cryptoPricesSaving}
+                onClick={saveCryptoPrices}
+                style={{
+                  padding: '10px 18px',
+                  background: cryptoPricesSaving ? '#444' : '#9b59b6',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: 6,
+                  cursor: cryptoPricesSaving ? 'wait' : 'pointer',
+                  fontSize: 13,
+                  fontWeight: 600,
+                }}
+              >
+                {cryptoPricesSaving ? 'Enregistrement…' : 'Enregistrer les prix'}
+              </button>
+            </div>
+          </div>
         )}
 
         {/* ===== LIQUIDITY & WITHDRAWALS ===== */}

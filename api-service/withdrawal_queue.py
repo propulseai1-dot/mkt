@@ -1417,6 +1417,9 @@ class PlatformControlManager:
     KEY_STRUCTURED_POLICY     = "structured_withdrawal_policy"
     KEY_STRUCTURED_THRESHOLD  = "structured_threshold_xmr"
     KEY_STRUCTURED_COVERAGE   = "structured_coverage_trigger"
+    KEY_MANUAL_CRYPTO_ENABLED = "manual_crypto_prices_enabled"
+    KEY_MANUAL_XMR_USD        = "manual_xmr_usd"
+    KEY_MANUAL_BTC_USD        = "manual_btc_usd"
 
     @staticmethod
     def _init_config_table():
@@ -1448,6 +1451,12 @@ class PlatformControlManager:
                  "XMR threshold above which structured withdrawal applies"),
                 (PlatformControlManager.KEY_STRUCTURED_COVERAGE, "0.80",
                  "Coverage ratio below which structured policy auto-activates"),
+                (PlatformControlManager.KEY_MANUAL_CRYPTO_ENABLED, "0",
+                 "Use admin-set USD spot prices for XMR/BTC instead of oracle (0=off, 1=on)"),
+                (PlatformControlManager.KEY_MANUAL_XMR_USD, "165.0",
+                 "Manual XMR/USD spot price when manual_crypto_prices_enabled=1"),
+                (PlatformControlManager.KEY_MANUAL_BTC_USD, "74000.0",
+                 "Manual BTC/USD spot price when manual_crypto_prices_enabled=1"),
             ]
             for key, value, desc in defaults:
                 c.execute("""
@@ -1790,6 +1799,46 @@ class PlatformControlManager:
     # ----------------------------------------------------------
     # ADMIN - Vue complete de la configuration
     # ----------------------------------------------------------
+
+    @staticmethod
+    def get_manual_crypto_settings() -> dict:
+        """Lecture des prix manuels (admin)."""
+        return {
+            "enabled": PlatformControlManager._get(PlatformControlManager.KEY_MANUAL_CRYPTO_ENABLED) == "1",
+            "xmr_usd": float(PlatformControlManager._get(PlatformControlManager.KEY_MANUAL_XMR_USD) or "0") or 165.0,
+            "btc_usd": float(PlatformControlManager._get(PlatformControlManager.KEY_MANUAL_BTC_USD) or "0") or 74000.0,
+        }
+
+    @staticmethod
+    def set_manual_crypto_prices(
+        enabled: bool, xmr_usd: float, btc_usd: float, admin: str
+    ) -> dict:
+        """Definit les prix spot USD affichages / calculs (remplace l'oracle si active)."""
+        if xmr_usd <= 0 or btc_usd <= 0:
+            return {"success": False, "error": "INVALID_PRICES"}
+        PlatformControlManager._set(
+            PlatformControlManager.KEY_MANUAL_CRYPTO_ENABLED,
+            "1" if enabled else "0",
+            admin,
+        )
+        PlatformControlManager._set(
+            PlatformControlManager.KEY_MANUAL_XMR_USD,
+            f"{round(float(xmr_usd), 2):.2f}",
+            admin,
+        )
+        PlatformControlManager._set(
+            PlatformControlManager.KEY_MANUAL_BTC_USD,
+            f"{round(float(btc_usd), 2):.2f}",
+            admin,
+        )
+        return {
+            "success": True,
+            "enabled": enabled,
+            "xmr_usd": round(float(xmr_usd), 2),
+            "btc_usd": round(float(btc_usd), 2),
+            "updated_by": admin,
+            "timestamp": datetime.utcnow().isoformat(),
+        }
 
     @staticmethod
     def get_admin_config() -> dict:

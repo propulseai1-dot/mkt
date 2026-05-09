@@ -1927,7 +1927,8 @@ def get_top_products():
 _price_cache = {
     "xmr": {"usd": 352.00, "change_24h": 0.0},
     "btc": {"usd": 74000.00, "change_24h": 0.0},
-    "last_update": 0
+    "last_update": 0.0,
+    "source": "bootstrap",
 }
 
 def _bool_env(name: str, default: str = "0") -> bool:
@@ -1954,15 +1955,40 @@ def _sanitize_listing_for_client(listing: dict) -> dict:
             out[key] = None
     return out
 
+def _apply_price_cache(xmr: float, btc: float, src: str) -> None:
+    global _price_cache
+    prev_xmr = float((_price_cache.get("xmr") or {}).get("usd") or 0)
+    prev_btc = float((_price_cache.get("btc") or {}).get("usd") or 0)
+    xmr_delta = round(((xmr - prev_xmr) / prev_xmr) * 100, 2) if prev_xmr > 0 else 0.0
+    btc_delta = round(((btc - prev_btc) / prev_btc) * 100, 2) if prev_btc > 0 else 0.0
+    _price_cache = {
+        "xmr": {"usd": round(float(xmr), 2), "change_24h": xmr_delta},
+        "btc": {"usd": round(float(btc), 2), "change_24h": btc_delta},
+        "last_update": time.time(),
+        "source": src,
+    }
+
+
 def fetch_real_prices():
     global _price_cache
+    try:
+        from withdrawal_queue import PlatformControlManager as PCM
+        if PCM._get(PCM.KEY_MANUAL_CRYPTO_ENABLED) == "1":
+            xmr = float(PCM._get(PCM.KEY_MANUAL_XMR_USD) or 0)
+            btc = float(PCM._get(PCM.KEY_MANUAL_BTC_USD) or 0)
+            if xmr > 0 and btc > 0:
+                _apply_price_cache(xmr, btc, "manual_admin")
+                return
+    except Exception:
+        pass
+
     oracle = get_prices(max_age_sec=55)
     if oracle:
-        _price_cache = {
-            "xmr": {"usd": round(float(oracle["xmr_usd"]), 2), "change_24h": 0.0},
-            "btc": {"usd": round(float(oracle["btc_usd"]), 2), "change_24h": 0.0},
-            "last_update": time.time(),
-        }
+        _apply_price_cache(
+            float(oracle["xmr_usd"]),
+            float(oracle["btc_usd"]),
+            str(oracle.get("source") or "oracle"),
+        )
         return
     if not _bool_env("SILKGENESIS_ENABLE_CLEARNET_PRICES", "0"):
         return
@@ -1975,7 +2001,8 @@ def fetch_real_prices():
             _price_cache = {
                 "xmr": {"usd": round(data["monero"]["usd"], 2), "change_24h": round(data["monero"].get("usd_24h_change", 0), 2)},
                 "btc": {"usd": round(data["bitcoin"]["usd"], 2), "change_24h": round(data["bitcoin"].get("usd_24h_change", 0), 2)},
-                "last_update": time.time()
+                "last_update": time.time(),
+                "source": "coingecko",
             }
             _dev_print(f"[OK] Prices updated: XMR=${_price_cache['xmr']['usd']} BTC=${_price_cache['btc']['usd']}")
     except Exception as e:
@@ -1991,8 +2018,47 @@ _price_thread.start()
 
 @app.get("/api/crypto-prices")
 def get_crypto_prices():
-    """Prix en direct de XMR et BTC depuis CoinGecko"""
-    return {"xmr": _price_cache["xmr"], "btc": _price_cache["btc"]}
+    """Prix XMR/BTC USD (oracle, manuel admin, ou fallback)."""
+    return {
+        "xmr": _price_cache["xmr"],
+        "btc": _price_cache["btc"],
+        "source": _price_cache.get("source", "unknown"),
+        "last_update": _price_cache.get("last_update"),
+    }
+
+
+@app.get("/api/admin/crypto-prices-config")
+def admin_get_crypto_prices_config(_admin: dict = Depends(require_admin)):
+    from withdrawal_queue import PlatformControlManager as PCM
+    st = PCM.get_manual_crypto_settings()
+    return {
+        "enabled": st["enabled"],
+        "xmr_usd": st["xmr_usd"],
+        "btc_usd": st["btc_usd"],
+        "effective_source": _price_cache.get("source", "unknown"),
+        "last_update": _price_cache.get("last_update"),
+    }
+
+
+@app.post("/api/admin/crypto-prices-config")
+def admin_set_crypto_prices_config(data: dict, _admin: dict = Depends(require_admin)):
+    from withdrawal_queue import PlatformControlManager as PCM
+    enabled = bool(data.get("enabled", False))
+    try:
+        xmr = float(data.get("xmr_usd", 0))
+        btc = float(data.get("btc_usd", 0))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="INVALID_PRICES")
+    out = PCM.set_manual_crypto_prices(enabled, xmr, btc, _admin.get("username") or "admin")
+    if not out.get("success"):
+        raise HTTPException(status_code=400, detail=out.get("error", "UPDATE_FAILED"))
+    log_admin(
+        AuditEvent.ADMIN_ACTION,
+        _admin.get("username") or "admin",
+        {"action": "CRYPTO_MANUAL_PRICES", **{k: v for k, v in out.items() if k != "success"}},
+    )
+    fetch_real_prices()
+    return out
 
 @app.get("/api/listings")
 def get_listings():
@@ -3171,13 +3237,20 @@ def upgrade_vendor(data: dict, session: dict = Depends(get_current_session)):
     if username not in users_db:
         return {"detail": "USER_NOT_FOUND"}, 404
     
-    # Calculer le cout en XMR (400$ / prix XMR marche reel).
-    oracle = get_prices(max_age_sec=120) or {}
-    xmr_rate = float(oracle.get("xmr_usd") or 0) if oracle else 0.0
+    # Calculer le cout en XMR (400$ / prix XMR): manuel admin > oracle > cache > defaut.
+    xmr_rate = 0.0
+    try:
+        from withdrawal_queue import PlatformControlManager as PCM
+        if PCM._get(PCM.KEY_MANUAL_CRYPTO_ENABLED) == "1":
+            xmr_rate = float(PCM._get(PCM.KEY_MANUAL_XMR_USD) or 0)
+    except Exception:
+        pass
+    if xmr_rate <= 0:
+        oracle = get_prices(max_age_sec=120) or {}
+        xmr_rate = float(oracle.get("xmr_usd") or 0)
     if xmr_rate <= 0:
         xmr_rate = float((_price_cache.get("xmr") or {}).get("usd") or 0)
     if xmr_rate <= 0:
-        # Fallback de securite si l'oracle est indisponible.
         xmr_rate = 165.0
     cost_xmr = 400.0 / xmr_rate
 
