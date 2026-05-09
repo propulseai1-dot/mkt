@@ -1,12 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Rocket, Shield, Lock, TrendingDown, Sparkles, Store, BarChart3, Headphones, ChevronRight
+  Rocket, Shield, Lock, TrendingDown, Sparkles, Store, BarChart3, Headphones, ChevronRight, Zap
 } from 'lucide-react';
 import { silkApiUrl } from './silkApi';
 
 /**
- * Page d’incitation : paliers de commission + CTA upgrade (comptes buyer).
- * Données paliers : GET /api/vendor-levels (aligné sur api-service/config.py).
+ * Buyer-facing pitch: commission tiers + vendor upgrade CTA.
+ * Tiers: GET /api/vendor-levels (same data as api-service/config.py).
  */
 export default function BecomeVendorPage({ xmrRate, balance, onUpgrade }) {
   const [levels, setLevels] = useState([]);
@@ -22,7 +22,7 @@ export default function BecomeVendorPage({ xmrRate, balance, onUpgrade }) {
         setLevels(Array.isArray(d.levels) ? d.levels : []);
         setLoadErr(null);
       } catch {
-        if (!cancelled) setLoadErr('Impossible de charger les paliers vendeur.');
+        if (!cancelled) setLoadErr('Could not load vendor tiers.');
       }
     })();
     return () => { cancelled = true; };
@@ -35,36 +35,34 @@ export default function BecomeVendorPage({ xmrRate, balance, onUpgrade }) {
   const formatSalesRange = (lvl) => {
     const min = lvl.min_sales ?? 0;
     const max = lvl.max_sales;
-    if (max == null) return `${min}+ ventes`;
-    return `${min} – ${max} ventes`;
+    if (max == null) return `${min}+ sales`;
+    return `${min} – ${max} sales`;
   };
 
   return (
     <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 space-y-10 pb-12">
-      {/* Hero */}
       <div className="relative overflow-hidden rounded-3xl border border-amber-900/30 bg-gradient-to-br from-amber-950/40 via-[#0a0a0f] to-purple-950/30 p-8 md:p-12">
         <div className="pointer-events-none absolute -right-20 -top-20 h-64 w-64 rounded-full bg-amber-600/10 blur-3xl" />
         <div className="pointer-events-none absolute -bottom-16 -left-16 h-48 w-48 rounded-full bg-purple-600/10 blur-3xl" />
         <div className="relative max-w-3xl space-y-4">
           <div className="inline-flex items-center gap-2 rounded-full border border-amber-500/30 bg-amber-500/10 px-3 py-1 text-[10px] font-black uppercase tracking-widest text-amber-400">
-            <Sparkles size={12} /> Compte acheteur → statut vendeur
+            <Sparkles size={12} /> Buyer account → vendor status
           </div>
           <h1 className="text-3xl font-black tracking-tight text-white md:text-4xl">
-            Ouvre ta boutique.{' '}
+            Open your shop.{' '}
             <span className="bg-gradient-to-r from-amber-400 to-orange-500 bg-clip-text text-transparent">
-              Prends moins de frais en montant en grade.
+              Pay lower fees as you level up.
             </span>
           </h1>
           <p className="text-sm font-medium normal-case not-italic leading-relaxed text-gray-400">
-            Les vendeurs bénéficient d’annonces mises en avant, d’outils de stock, d’escrow intégré et d’une
-            commission qui baisse automatiquement au fil de tes ventes — jusqu’à <strong className="text-amber-500">2&nbsp;%</strong> seulement
-            au palier légendaire.
+            Vendors get listing tools, built-in escrow, and a commission that drops as you sell — down to{' '}
+            <strong className="text-amber-500">2%</strong> at the top tier.
           </p>
           <div className="flex flex-wrap gap-3 pt-2">
             {[
-              { icon: Shield, t: 'Escrow & libération sécurisée' },
-              { icon: Lock, t: 'PGP & messagerie chiffrée' },
-              { icon: BarChart3, t: 'Tableau de bord revenus' },
+              { icon: Shield, t: 'Secure escrow releases' },
+              { icon: Lock, t: 'PGP & encrypted chat' },
+              { icon: BarChart3, t: 'Earnings dashboard' },
             ].map(({ icon: Ic, t }) => (
               <div
                 key={t}
@@ -78,22 +76,21 @@ export default function BecomeVendorPage({ xmrRate, balance, onUpgrade }) {
         </div>
       </div>
 
-      {/* Pourquoi vendre ici */}
       <div className="grid gap-4 md:grid-cols-3">
         {[
           {
-            title: 'Visibilité marketplace',
-            body: 'Place ton offre au même endroit que les acheteurs déjà en confiance sur la plateforme.',
+            title: 'Marketplace visibility',
+            body: 'List where buyers already shop and trust the platform.',
             icon: Store,
           },
           {
-            title: 'Frais qui diminuent',
-            body: 'De 8% pour démarrer jusqu’à 2% : chaque tranche de ventes débloque des conditions plus agressives.',
+            title: 'Fees that shrink',
+            body: 'From 8% when you start to 2% at the top — each tier unlocks better rates.',
             icon: TrendingDown,
           },
           {
-            title: 'Accompagnement',
-            body: 'Messages intégrés, litiges, et file d’attente admin pour valider ton passage vendeur.',
+            title: 'Operations support',
+            body: 'Built-in messages, disputes, and an admin queue to approve your vendor upgrade.',
             icon: Headphones,
           },
         ].map(card => (
@@ -110,13 +107,12 @@ export default function BecomeVendorPage({ xmrRate, balance, onUpgrade }) {
         ))}
       </div>
 
-      {/* Paliers */}
       <div>
         <div className="mb-6 flex items-end justify-between gap-4 border-b border-white/10 pb-4">
           <div>
-            <h2 className="text-xl font-black text-white">Tous les paliers vendeur</h2>
+            <h2 className="text-xl font-black text-white">All vendor tiers</h2>
             <p className="mt-1 text-[11px] font-medium normal-case not-italic text-gray-500">
-              Commission prélevée sur chaque vente escrow — baisse automatiquement selon ton historique de ventes.
+              Platform fee per escrow sale — decreases automatically as your completed sales grow.
             </p>
           </div>
           <Rocket className="hidden text-amber-600/50 sm:block" size={28} />
@@ -143,18 +139,18 @@ export default function BecomeVendorPage({ xmrRate, balance, onUpgrade }) {
                   {lvl.icon}
                 </div>
                 <div className="text-[10px] font-black uppercase tracking-widest" style={{ color }}>
-                  {lvl.badge || `Niveau ${lvl.level}`}
+                  {lvl.badge || `Level ${lvl.level}`}
                 </div>
                 <h3 className="mt-1 text-sm font-black text-white">{lvl.name}</h3>
                 <div className="mt-3 text-2xl font-black tabular-nums" style={{ color }}>
                   {pct}%
                 </div>
-                <p className="text-[9px] font-bold uppercase tracking-wide text-gray-500">commission</p>
+                <p className="text-[9px] font-bold uppercase tracking-wide text-gray-500">fee</p>
                 <p className="mt-3 text-[10px] font-medium normal-case not-italic text-gray-500">
                   {formatSalesRange(lvl)}
                 </p>
                 <div className="mt-3 flex items-center text-[9px] font-bold text-amber-600/80 opacity-0 transition-opacity group-hover:opacity-100">
-                  Frais plateforme <ChevronRight size={12} />
+                  Platform fee <ChevronRight size={12} />
                 </div>
               </div>
             );
@@ -162,13 +158,12 @@ export default function BecomeVendorPage({ xmrRate, balance, onUpgrade }) {
         </div>
       </div>
 
-      {/* CTA */}
       <div className="relative overflow-hidden rounded-3xl border border-purple-900/40 bg-gradient-to-r from-purple-950/50 to-amber-950/40 p-8 md:flex md:items-center md:justify-between md:gap-8">
         <div className="relative z-10 max-w-xl space-y-2">
-          <h3 className="text-lg font-black text-white md:text-xl">Prêt à lancer ?</h3>
+          <h3 className="text-lg font-black text-white md:text-xl">Ready to apply?</h3>
           <p className="text-[12px] font-medium normal-case not-italic leading-relaxed text-gray-400">
-            La demande est traitée par l’administration. Le montant équivalent <strong className="text-white">400&nbsp;USD</strong> est
-            débité en XMR depuis ton wallet au moment de la demande (selon le cours affiché sur le marché).
+            Your request is reviewed by staff. The <strong className="text-white">$400 USD</strong> equivalent is
+            debited in XMR from your wallet when you submit (using the market spot rate).
           </p>
         </div>
         <div className="relative z-10 mt-6 flex flex-shrink-0 flex-col items-stretch gap-3 md:mt-0 md:items-end">
@@ -176,18 +171,18 @@ export default function BecomeVendorPage({ xmrRate, balance, onUpgrade }) {
             {rate > 0 ? (
               <>
                 <div>
-                  ≈ <span className="text-amber-400">{upgradeXmr.toFixed(4)}</span> XMR à{' '}
+                  ≈ <span className="text-amber-400">{upgradeXmr.toFixed(4)}</span> XMR at{' '}
                   <span className="text-gray-400">${rate.toFixed(2)}</span> / XMR
                 </div>
                 <div className="mt-1">
-                  Solde :{' '}
+                  Balance:{' '}
                   <span className={canAfford ? 'text-green-500' : 'text-red-400'}>
                     {(Number(balance) || 0).toFixed(4)} XMR
                   </span>
                 </div>
               </>
             ) : (
-              <span>Cours XMR indisponible — recharge la page.</span>
+              <span>XMR rate unavailable — refresh the page.</span>
             )}
           </div>
           <button
@@ -197,7 +192,7 @@ export default function BecomeVendorPage({ xmrRate, balance, onUpgrade }) {
             className="flex items-center justify-center gap-2 rounded-xl bg-amber-500 px-6 py-3.5 text-[11px] font-black uppercase tracking-wide text-black shadow-lg shadow-amber-900/30 transition-all hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-40"
           >
             <Zap size={16} />
-            Upgrade vendeur
+            Become vendor
           </button>
         </div>
       </div>

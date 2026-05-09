@@ -5,7 +5,7 @@ import {
   Layers, Trash2, CheckCircle, XCircle, Zap, UserPlus, DollarSign, 
   UserMinus, Copy, Home, MessageSquare, PlusCircle, Crown,
   User as UserIcon, Package, ArrowUpCircle, ArrowDownCircle, Lock,
-  Search, Filter, Tag, Unlock, Key, Globe, Rocket
+  Search, Filter, Tag, Unlock, Key, Globe, Rocket, Share2
 } from 'lucide-react';
 import Logo from './Silk_logo.png';
 import VendorDashboard from './VendorDashboard';
@@ -15,6 +15,7 @@ import ReleaseFunds from './ReleaseFunds';
 import AboutPage from './AboutPage';
 import CanaryPage from './CanaryPage';
 import BecomeVendorPage from './BecomeVendorPage';
+import AffiliateProgramPage from './AffiliateProgramPage';
 import AlphaBanner from './components/AlphaBanner';
 import { TwoFactorSetup } from './TwoFactorSetup';
 import { silkApiUrl as silkGenesisApiUrl } from './silkApi';
@@ -2846,7 +2847,7 @@ function ProfilePage({ user, onUpdateAvatar, onUpgrade, onDelete }) {
           </div>
           {user?.role === 'buyer' && (
             <button onClick={onUpgrade} className="bg-amber-600 text-black px-6 py-3 rounded-xl text-[11px] hover:bg-amber-400 transition-all flex items-center gap-2 shadow-xl">
-              <Zap size={14}/> Upgrade vendeur
+              <Zap size={14}/> Become vendor
             </button>
           )}
         </div>
@@ -4449,6 +4450,19 @@ function App() {
   const authFailureHandledRef = React.useRef(false);
 
   // Wrapper for fetch that automatically adds session token
+  useEffect(() => {
+    try {
+      const q = new URLSearchParams(window.location.search);
+      const r = q.get('ref');
+      if (r) sessionStorage.setItem('silk_pending_ref', r.trim());
+      if (window.location.hash.replace(/^#/, '') === 'affiliation') {
+        setActiveTab('affiliation');
+      }
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
   const authenticatedFetch = useCallback(async (url, options = {}) => {
     let token = sessionToken;
     if (!token) {
@@ -4933,12 +4947,26 @@ function App() {
   };
 
   const handleRegister = async (username, password, token) => {
+    let referral_code = null;
+    try {
+      const pending = sessionStorage.getItem('silk_pending_ref');
+      if (pending) referral_code = pending.trim().toUpperCase();
+    } catch {
+      /* ignore */
+    }
+    const body = { username, password, pow_solution: token };
+    if (referral_code) body.referral_code = referral_code;
     const res = await fetch(silkGenesisApiUrl('/api/register'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password, pow_solution: token })
+      body: JSON.stringify(body)
     });
     if (res.ok) {
+      try {
+        sessionStorage.removeItem('silk_pending_ref');
+      } catch {
+        /* ignore */
+      }
       const data = await res.json();
       if (data.pgp_generated && data.pgp_private_key_encrypted) {
         setNewUserPGPData(data);
@@ -5363,7 +5391,7 @@ function App() {
                 onClick={() => setActiveTab('become_vendor')}
                 className={`p-2.5 rounded-lg cursor-pointer flex items-center border border-amber-900/20 transition-all ${activeTab === 'become_vendor' ? 'text-amber-500 bg-amber-900/15 border-l-4 border-amber-600' : 'hover:bg-amber-900/5 text-gray-400'}`}
               >
-                <Rocket className="mr-3" size={15} /> Upgrade vendeur
+                <Rocket className="mr-3" size={15} /> Become vendor
               </div>
             )}
             <div onClick={() => setActiveTab('orders')}
@@ -5385,6 +5413,23 @@ function App() {
             }}
               className={`p-2.5 rounded-lg cursor-pointer flex items-center transition-all ${activeTab === 'messages' ? 'text-amber-500 bg-amber-900/10 border-l-4 border-amber-600' : 'hover:bg-white/5 text-gray-400'}`}>
               <MessageSquare className="mr-3" size={15}/> Messages
+            </div>
+            <div
+              onClick={() => {
+                setActiveTab('affiliation');
+                try {
+                  window.history.replaceState(
+                    null,
+                    '',
+                    `${window.location.pathname}${window.location.search}#affiliation`
+                  );
+                } catch {
+                  /* ignore */
+                }
+              }}
+              className={`p-2.5 rounded-lg cursor-pointer flex items-center border border-purple-900/20 transition-all ${activeTab === 'affiliation' ? 'text-purple-400 bg-purple-900/15 border-l-4 border-purple-500' : 'hover:bg-purple-900/5 text-gray-400'}`}
+            >
+              <Share2 className="mr-3" size={15} /> Affiliation
             </div>
             {user.role === 'admin' && (
               <div onClick={() => tryOpenAdminTab('admin_panel')}
@@ -5474,6 +5519,10 @@ function App() {
               balance={balance}
               onUpgrade={handleUpgradeVendor}
             />
+          )}
+
+          {activeTab === 'affiliation' && user && (
+            <AffiliateProgramPage user={user} authenticatedFetch={authenticatedFetch} />
           )}
 
           {/* CANARY PAGE */}

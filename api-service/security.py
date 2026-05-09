@@ -9,6 +9,7 @@ SILKGENESIS - Security Module v2.0
 """
 import hashlib
 import hmac
+import json
 import os
 import time
 import base64
@@ -17,6 +18,8 @@ import threading
 import secrets
 from datetime import datetime, timedelta
 from typing import Optional
+
+from silk_paths import persist_base_dir
 
 # ============================================================
 # PEPPER - Extra secret mixed into all hashes
@@ -412,11 +415,53 @@ _dms_interval_hours = 72  # 72 hours default
 _dms_enabled = False
 _dms_action = "shutdown"  # "shutdown" | "wipe" | "alert"
 
+DMS_SECURITY_STATE_FILE = os.path.join(persist_base_dir(), "dms_security.json")
+
+
+def _load_dms_persisted_state() -> None:
+    """Restore DMS timer / enabled flag across process restarts."""
+    global _dms_last_checkin, _dms_interval_hours, _dms_enabled, _dms_action
+    try:
+        if os.path.isfile(DMS_SECURITY_STATE_FILE):
+            with open(DMS_SECURITY_STATE_FILE, encoding="utf-8") as f:
+                data = json.load(f)
+            _dms_enabled = bool(data.get("enabled", False))
+            _dms_interval_hours = max(1, int(data.get("interval_hours", 72)))
+            act = str(data.get("action", "shutdown"))
+            if act in ("shutdown", "wipe", "alert"):
+                _dms_action = act
+            lc = data.get("last_checkin_ts")
+            if lc is not None:
+                _dms_last_checkin = float(lc)
+    except Exception:
+        pass
+
+
+def _save_dms_persisted_state() -> None:
+    try:
+        with open(DMS_SECURITY_STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "enabled": _dms_enabled,
+                    "interval_hours": _dms_interval_hours,
+                    "action": _dms_action,
+                    "last_checkin_ts": _dms_last_checkin,
+                },
+                f,
+                indent=2,
+            )
+    except Exception:
+        pass
+
+
+_load_dms_persisted_state()
+
 
 def dms_checkin():
     """Admin checks in to prevent dead man switch trigger"""
     global _dms_last_checkin
     _dms_last_checkin = time.time()
+    _save_dms_persisted_state()
     return {"status": "ok", "next_required_in_hours": _dms_interval_hours}
 
 
@@ -424,8 +469,9 @@ def dms_configure(enabled: bool, interval_hours: int = 72, action: str = "shutdo
     """Configure the dead man switch"""
     global _dms_enabled, _dms_interval_hours, _dms_action
     _dms_enabled = enabled
-    _dms_interval_hours = interval_hours
-    _dms_action = action
+    _dms_interval_hours = max(1, int(interval_hours))
+    _dms_action = action if action in ("shutdown", "wipe", "alert") else "shutdown"
+    _save_dms_persisted_state()
 
 
 def dms_status() -> dict:

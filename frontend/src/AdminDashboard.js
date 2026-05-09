@@ -77,6 +77,7 @@ export default function AdminDashboard({ user, sessionToken: sessionTokenProp })
   });
   const [cryptoPriceMeta, setCryptoPriceMeta] = useState(null);
   const [cryptoPricesSaving, setCryptoPricesSaving] = useState(false);
+  const [dmsToggleSaving, setDmsToggleSaving] = useState(false);
   const listingImageInputRef = useRef(null);
   const [listingImageTargetId, setListingImageTargetId] = useState(null);
   const sessionToken = sessionTokenProp || (() => {
@@ -261,15 +262,52 @@ export default function AdminDashboard({ user, sessionToken: sessionTokenProp })
       const r = await adminFetch('/admin/canary/update', { method: 'POST' });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) {
-        showMsg(d.detail || 'Failed to update canary', 'error');
+        showMsg(d.detail || 'Failed to update warrant canary', 'error');
         return;
       }
-      showMsg(`Canary updated (${d.last_updated || 'ok'})`);
+      showMsg(`Warrant canary date set to today (${d.last_updated || ''}). Published at /api/canary.`);
       loadAll();
     } catch {
-      showMsg('Network error while updating canary', 'error');
+      showMsg('Network error (canary)', 'error');
     } finally {
       setCanaryUpdating(false);
+    }
+  };
+
+  const setDmsEnabled = async (enabled) => {
+    if (enabled) {
+      const ok = window.confirm(
+        'Enable the Dead Man Switch?\n\nIf you miss a check-in before the deadline, the configured action '
+          + '(shutdown / wipe / alert) may run automatically.'
+      );
+      if (!ok) return;
+    } else {
+      const ok = window.confirm('Disable the Dead Man Switch? The timer state stays saved but nothing will trigger.');
+      if (!ok) return;
+    }
+    setDmsToggleSaving(true);
+    try {
+      const r = await adminFetch('/admin/dms/configure', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: user?.username,
+          enabled,
+          interval_hours: dmsStatus?.interval_hours ?? 72,
+          action: dmsStatus?.action ?? 'shutdown',
+        }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        showMsg(d.detail || 'DMS configuration rejected', 'error');
+        return;
+      }
+      showMsg(enabled ? 'Dead Man Switch enabled (saved to disk)' : 'Dead Man Switch disabled');
+      await loadAll();
+    } catch {
+      showMsg('Network error (DMS)', 'error');
+    } finally {
+      setDmsToggleSaving(false);
     }
   };
 
@@ -291,7 +329,7 @@ export default function AdminDashboard({ user, sessionToken: sessionTokenProp })
         last_update: d.last_update,
       });
     } catch {
-      showMsg('Impossible de charger la config des prix', 'error');
+      showMsg('Could not load crypto price config', 'error');
     }
   }, [adminFetch]);
 
@@ -305,7 +343,7 @@ export default function AdminDashboard({ user, sessionToken: sessionTokenProp })
     const xmr = parseFloat(String(cryptoPriceForm.xmr_usd).replace(',', '.'));
     const btc = parseFloat(String(cryptoPriceForm.btc_usd).replace(',', '.'));
     if (!(xmr > 0 && btc > 0 && Number.isFinite(xmr) && Number.isFinite(btc))) {
-      showMsg('XMR et BTC USD doivent être des nombres positifs', 'error');
+      showMsg('XMR and BTC / USD must be positive numbers', 'error');
       return;
     }
     setCryptoPricesSaving(true);
@@ -321,17 +359,17 @@ export default function AdminDashboard({ user, sessionToken: sessionTokenProp })
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) {
-        showMsg(d.detail || d.error || 'Erreur lors de l’enregistrement', 'error');
+        showMsg(d.detail || d.error || 'Save failed', 'error');
         return;
       }
       showMsg(
         cryptoPriceForm.enabled
-          ? 'Prix manuels activés et enregistrés'
-          : 'Mode automatique : prix enregistrés (oracle/CoinGecko si pas manuel)'
+          ? 'Manual crypto prices saved and active'
+          : 'Settings saved — automatic pricing when manual mode is off'
       );
       loadCryptoPricesConfig();
     } catch {
-      showMsg('Erreur réseau', 'error');
+      showMsg('Network error', 'error');
     } finally {
       setCryptoPricesSaving(false);
     }
@@ -345,7 +383,7 @@ export default function AdminDashboard({ user, sessionToken: sessionTokenProp })
     { id: 'orders', label: '📦 Orders', icon: ShoppingCart },
     { id: 'vendors', label: `🏪 Vendors${sellerReqs.length > 0 ? ` (${sellerReqs.length})` : ''}`, icon: UserCheck },
     { id: 'categories', label: '🗂️ Categories', icon: Package },
-    { id: 'prices', label: '💲 Prix crypto', icon: DollarSign },
+    { id: 'prices', label: '💲 Crypto prices', icon: DollarSign },
     { id: 'liquidity', label: '💧 Liquidity & Withdrawals', icon: DollarSign },
     { id: 'system', label: '⚙️ System', icon: Terminal },
   ];
@@ -751,7 +789,7 @@ export default function AdminDashboard({ user, sessionToken: sessionTokenProp })
                     showMsg(detailStr || 'Image update failed', 'error');
                     return;
                   }
-                  showMsg(d.message || 'Photo du listing mise à jour');
+                  showMsg(d.message || 'Listing image updated');
                   loadAll();
                 } catch (err) {
                   showMsg(String(err?.message || err || 'Image processing failed'), 'error');
@@ -831,15 +869,15 @@ export default function AdminDashboard({ user, sessionToken: sessionTokenProp })
           <AdminCategories user={user} sessionToken={sessionToken} />
         )}
 
-        {/* ===== PRIX CRYPTO (manuel admin) ===== */}
+        {/* ===== CRYPTO PRICES (manual admin) ===== */}
         {tab === 'prices' && (
           <div style={{ maxWidth: 560 }}>
             <div style={s.sectionTitle}>
-              <TrendingUp size={14} /> Prix spot USD (XMR / BTC)
+              <TrendingUp size={14} /> Spot USD (XMR / BTC)
             </div>
             <p style={{ fontSize: 12, color: '#666', marginBottom: 16, lineHeight: 1.5 }}>
-              Quand le mode manuel est activé, ces valeurs remplacent l’oracle et CoinGecko pour l’affichage public,
-              le taux des annonces et le calcul du upgrade vendeur (400&nbsp;$ équivalent XMR).
+              When manual mode is on, these values override the price oracle and clearnet fallback for the public ticker,
+              listing rate, and vendor upgrade ($400 USD in XMR).
             </p>
             <div style={{ background: '#0d0d1a', border: '1px solid #1a1a2e', borderRadius: 10, padding: 16 }}>
               <label style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16, cursor: 'pointer' }}>
@@ -849,7 +887,7 @@ export default function AdminDashboard({ user, sessionToken: sessionTokenProp })
                   onChange={e => setCryptoPriceForm(f => ({ ...f, enabled: e.target.checked }))}
                   style={{ width: 18, height: 18, accentColor: '#9b59b6' }}
                 />
-                <span style={{ fontSize: 13, color: '#ccc' }}>Utiliser ces prix manuellement (désactive oracle / clearnet pour l’affichage)</span>
+                <span style={{ fontSize: 13, color: '#ccc' }}>Use manual prices (skips oracle / clearnet for display)</span>
               </label>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
                 <div>
@@ -877,12 +915,12 @@ export default function AdminDashboard({ user, sessionToken: sessionTokenProp })
               </div>
               {cryptoPriceMeta && (
                 <div style={{ fontSize: 11, color: '#555', marginBottom: 12, fontFamily: 'monospace' }}>
-                  Source effective actuelle :{' '}
+                  Effective source:{' '}
                   <span style={{ color: '#9b59b6' }}>{cryptoPriceMeta.effective_source || '—'}</span>
                   {cryptoPriceMeta.last_update != null && (
                     <>
                       {' · '}
-                      maj{' '}
+                      updated{' '}
                       {new Date(
                         typeof cryptoPriceMeta.last_update === 'number'
                           ? cryptoPriceMeta.last_update * 1000
@@ -907,7 +945,7 @@ export default function AdminDashboard({ user, sessionToken: sessionTokenProp })
                   fontWeight: 600,
                 }}
               >
-                {cryptoPricesSaving ? 'Enregistrement…' : 'Enregistrer les prix'}
+                {cryptoPricesSaving ? 'Saving…' : 'Save prices'}
               </button>
             </div>
           </div>
@@ -920,7 +958,38 @@ export default function AdminDashboard({ user, sessionToken: sessionTokenProp })
 
         {/* ===== SYSTEM ===== */}
         {tab === 'system' && (
-          <div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            {/* Warrant Canary */}
+            <div style={{ background: '#0d0d1a', border: '1px solid #3498db44', borderRadius: 10, padding: 16 }}>
+              <div style={s.sectionTitle}><Shield size={14} /> Warrant Canary</div>
+              <p style={{ fontSize: 11, color: '#666', marginBottom: 12, lineHeight: 1.5 }}>
+                Updates the date inside the public statement served at{' '}
+                <span style={{ fontFamily: 'monospace', color: '#3498db' }}>/api/canary</span>. The value is persisted on
+                disk so it survives server restarts.
+              </p>
+              <div style={{ fontSize: 12, color: '#ccc', marginBottom: 12 }}>
+                Last published date:{' '}
+                <span style={{ fontFamily: 'monospace', color: '#9b59b6' }}>{canaryInfo?.last_updated || '—'}</span>
+              </div>
+              <button
+                type="button"
+                onClick={updateCanary}
+                disabled={canaryUpdating}
+                style={{
+                  padding: '10px 18px',
+                  background: canaryUpdating ? '#333' : '#3498db22',
+                  color: '#3498db',
+                  border: '1px solid #3498db55',
+                  borderRadius: 6,
+                  cursor: canaryUpdating ? 'default' : 'pointer',
+                  fontSize: 12,
+                  fontWeight: 700,
+                }}
+              >
+                {canaryUpdating ? 'Updating…' : 'Set date to today'}
+              </button>
+            </div>
+
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
               {/* System Banner */}
               <div style={{ background: '#0d0d1a', border: '1px solid #1a1a2e', borderRadius: 10, padding: 16 }}>
@@ -985,19 +1054,6 @@ export default function AdminDashboard({ user, sessionToken: sessionTokenProp })
                     ))}
                   </div>
                 )}
-                <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid #1a1a2e' }}>
-                  <div style={{ fontSize: 11, color: '#555', marginBottom: 6 }}>Warrant Canary</div>
-                  <div style={{ fontSize: 12, color: '#ccc', marginBottom: 10 }}>
-                    Last update: <span style={{ fontFamily: 'monospace', color: '#9b59b6' }}>{canaryInfo?.last_updated || 'Unknown'}</span>
-                  </div>
-                  <button
-                    onClick={updateCanary}
-                    disabled={canaryUpdating}
-                    style={{ padding: '8px 16px', background: '#3498db22', color: '#3498db', border: '1px solid #3498db44', borderRadius: 6, cursor: canaryUpdating ? 'default' : 'pointer', fontSize: 12, fontWeight: 600 }}
-                  >
-                    {canaryUpdating ? 'Updating…' : 'Update Canary'}
-                  </button>
-                </div>
               </div>
 
               {/* Emergency Controls */}
@@ -1034,37 +1090,95 @@ export default function AdminDashboard({ user, sessionToken: sessionTokenProp })
               {/* Dead Man Switch */}
               <div style={{ background: '#0d0d1a', border: '1px solid #f39c1244', borderRadius: 10, padding: 16 }}>
                 <div style={{ ...s.sectionTitle, color: '#f39c12' }}><Clock size={14} /> Dead Man Switch</div>
-                <div style={{ fontSize: 12, color: '#888', marginBottom: 12 }}>
-                  Auto-shutdown if admin doesn't check in within the configured interval.
+                <div style={{ fontSize: 12, color: '#888', marginBottom: 12, lineHeight: 1.5 }}>
+                  When enabled, fires if no admin check-in before the deadline (security module; state persisted on disk).
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+                  <button
+                    type="button"
+                    disabled={dmsToggleSaving || dmsStatus?.enabled}
+                    onClick={() => setDmsEnabled(true)}
+                    style={{
+                      flex: '1 1 140px',
+                      padding: '10px 14px',
+                      background: dmsStatus?.enabled ? '#222' : 'rgba(39,174,96,0.15)',
+                      color: dmsStatus?.enabled ? '#555' : '#27ae60',
+                      border: `1px solid ${dmsStatus?.enabled ? '#333' : '#27ae6044'}`,
+                      borderRadius: 6,
+                      cursor: dmsToggleSaving || dmsStatus?.enabled ? 'default' : 'pointer',
+                      fontSize: 11,
+                      fontWeight: 700,
+                    }}
+                  >
+                    {dmsToggleSaving ? '…' : 'Enable DMS'}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={dmsToggleSaving || !dmsStatus?.enabled}
+                    onClick={() => setDmsEnabled(false)}
+                    style={{
+                      flex: '1 1 140px',
+                      padding: '10px 14px',
+                      background: !dmsStatus?.enabled ? '#222' : 'rgba(231,76,60,0.12)',
+                      color: !dmsStatus?.enabled ? '#555' : '#e74c3c',
+                      border: `1px solid ${!dmsStatus?.enabled ? '#333' : '#e74c3c44'}`,
+                      borderRadius: 6,
+                      cursor: dmsToggleSaving || !dmsStatus?.enabled ? 'default' : 'pointer',
+                      fontSize: 11,
+                      fontWeight: 700,
+                    }}
+                  >
+                    Disable DMS
+                  </button>
                 </div>
                 <button
+                  type="button"
                   onClick={async () => {
                     const r = await adminFetch('/admin/dms/checkin', {
-                      method: 'POST', headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ username: user?.username })
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ username: user?.username }),
                     });
                     const d = await r.json();
                     if (typeof d?.next_required_in_hours === 'number') {
                       setDmsRemainingSec(Math.max(0, Math.floor(d.next_required_in_hours * 3600)));
                     }
-                    showMsg(`DMS check-in confirmed. Next required in ${d.next_required_in_hours}h`);
+                    showMsg(`Check-in recorded. Next deadline in ${d.next_required_in_hours}h.`);
                     loadAll();
                   }}
-                  style={{ padding: '10px 16px', background: 'rgba(243,156,18,0.15)', color: '#f39c12', border: '1px solid #f39c1244', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600, width: '100%' }}
+                  style={{
+                    padding: '10px 16px',
+                    background: 'rgba(243,156,18,0.15)',
+                    color: '#f39c12',
+                    border: '1px solid #f39c1244',
+                    borderRadius: 6,
+                    cursor: 'pointer',
+                    fontSize: 12,
+                    fontWeight: 600,
+                    width: '100%',
+                  }}
                 >
-                  ✓ Check In (Reset Timer)
+                  ✓ Admin check-in (reset timer)
                 </button>
                 <div style={{ marginTop: 12, background: '#0a0a14', border: '1px solid #2a2a3e', borderRadius: 8, padding: 10 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, marginBottom: 6 }}>
-                    <span style={{ color: '#666' }}>DMS status</span>
-                    <span style={{ color: dmsStatus?.enabled ? '#27ae60' : '#777' }}>{dmsStatus?.enabled ? 'ENABLED' : 'DISABLED'}</span>
+                    <span style={{ color: '#666' }}>Status</span>
+                    <span style={{ color: dmsStatus?.enabled ? '#27ae60' : '#777' }}>
+                      {dmsStatus?.enabled ? 'ENABLED' : 'DISABLED'}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, marginBottom: 4 }}>
+                    <span style={{ color: '#666' }}>Interval</span>
+                    <span style={{ color: '#aaa', fontFamily: 'monospace' }}>
+                      {dmsStatus?.interval_hours ?? 72} h
+                    </span>
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, marginBottom: 4 }}>
                     <span style={{ color: '#666' }}>Action</span>
                     <span style={{ color: '#f39c12', fontFamily: 'monospace' }}>{dmsStatus?.action || 'shutdown'}</span>
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11 }}>
-                    <span style={{ color: '#666' }}>Time remaining</span>
+                    <span style={{ color: '#666' }}>Time left</span>
                     <span style={{ color: dmsRemainingSec === 0 ? '#e74c3c' : '#27ae60', fontFamily: 'monospace' }}>
                       {formatDuration(dmsRemainingSec)}
                     </span>

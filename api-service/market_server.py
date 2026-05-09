@@ -20,6 +20,14 @@ from silk_paths import ensure_silk_data_layout, persist_base_dir
 
 ensure_silk_data_layout()
 
+from affiliate_program import (
+    apply_affiliate_payouts,
+    program_static_payload,
+    stats_for_user,
+    payments_for_user,
+    leaderboard_current_month,
+)
+
 from fastapi import FastAPI, HTTPException, Request, Depends, Header
 from fastapi.responses import JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -762,10 +770,15 @@ def _debit_platform_liquidity_xmr(amount: float) -> None:
         users_db[key]["balance"] = round(float(users_db[key].get("balance", 0)) - float(amount), 8)
 
 
-def _settle_order_funds_to_vendor(vendor: str, amount_xmr: float) -> dict:
+def _settle_order_funds_to_vendor(
+    vendor: str,
+    amount_xmr: float,
+    buyer: Optional[str] = None,
+    order_id: Optional[str] = None,
+) -> dict:
     """
-    Sortie d'escrow (comptabilite): commission selon niveau -> liquidite site, net -> balance vendeur.
-    Niveau calcule sur les ventes *avant* celle-ci (get_vendor_level + update apres).
+    Escrow settlement: marketplace fee by vendor tier; 55% of fee to affiliate tree + vendor referrer,
+    45% of fee to platform liquidity. Net sale proceeds -> vendor balance.
     """
     with funds_rlock:
         level = get_vendor_level(vendor)
@@ -777,8 +790,18 @@ def _settle_order_funds_to_vendor(vendor: str, amount_xmr: float) -> dict:
         key = _platform_liquidity_account()
         if not key:
             raise RuntimeError("NO_PLATFORM_ACCOUNT")
+
+        aff = apply_affiliate_payouts(
+            users_db,
+            buyer,
+            vendor,
+            commission_xmr,
+            float(amount_xmr),
+            order_id or "",
+        )
+        platform_slice = float(aff.get("platform_net_commission_xmr") or 0)
         users_db[key]["balance"] = round(
-            float(users_db[key].get("balance", 0)) + float(commission_xmr), 8
+            float(users_db[key].get("balance", 0)) + platform_slice, 8
         )
         if vendor in users_db:
             users_db[vendor]["balance"] = round(
@@ -792,6 +815,8 @@ def _settle_order_funds_to_vendor(vendor: str, amount_xmr: float) -> dict:
             "commission_pct": round(rate * 100, 2),
             "commission_xmr": commission_xmr,
             "net_xmr": net_xmr,
+            "affiliate": aff,
+            "platform_commission_kept_xmr": platform_slice,
         }
 
 
@@ -820,7 +845,12 @@ def auto_finalize_orders():
                                 vendor = cur.get("vendor")
                                 amount = float(cur.get("amount_xmr", 0))
                                 try:
-                                    s = _settle_order_funds_to_vendor(vendor, amount)
+                                    s = _settle_order_funds_to_vendor(
+                                        vendor,
+                                        amount,
+                                        buyer=cur.get("buyer"),
+                                        order_id=order_id,
+                                    )
                                 except RuntimeError:
                                     _dev_print(f"[AUTO-FINALIZE] Skip {order_id}: no platform liquidity account")
                                     continue
@@ -3200,7 +3230,12 @@ def resolve_dispute(data: dict, _admin: dict = Depends(require_admin)):
         else:
             if dispute["vendor"] in users_db:
                 try:
-                    s = _settle_order_funds_to_vendor(dispute["vendor"], float(amount))
+                    s = _settle_order_funds_to_vendor(
+                        dispute["vendor"],
+                        float(amount),
+                        buyer=order.get("buyer"),
+                        order_id=order_id,
+                    )
                     orders_db[order_id]["settlement"] = s
                     resolution = (
                         f"Resolved for VENDOR. Net {s.get('net_xmr', 0):.6f} XMR, "
@@ -3660,6 +3695,37 @@ SilkGenesis Admin Team
 [Admin PGP Signature Placeholder - Replace with real signature]
 -----END PGP SIGNATURE-----"""
 WARRANT_CANARY_LAST_UPDATED = datetime.utcnow()
+WARRANT_CANARY_STATE_FILE = os.path.join(persist_base_dir(), "warrant_canary.json")
+
+
+def _load_warrant_canary_date() -> None:
+    """Restore last canary date from disk so /api/canary survives restarts."""
+    global WARRANT_CANARY_LAST_UPDATED
+    try:
+        if os.path.isfile(WARRANT_CANARY_STATE_FILE):
+            with open(WARRANT_CANARY_STATE_FILE, encoding="utf-8") as f:
+                data = json.load(f)
+            s = (data.get("last_updated") or "").strip()
+            if s:
+                if s.endswith("Z"):
+                    s = s[:-1]
+                dt = datetime.fromisoformat(s)
+                if dt.tzinfo is not None:
+                    dt = dt.replace(tzinfo=None)
+                WARRANT_CANARY_LAST_UPDATED = dt
+    except Exception:
+        pass
+
+
+def _save_warrant_canary_date(dt: datetime) -> None:
+    try:
+        with open(WARRANT_CANARY_STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump({"last_updated": dt.isoformat()}, f, indent=2)
+    except Exception:
+        pass
+
+
+_load_warrant_canary_date()
 
 @app.get("/api/canary")
 def get_warrant_canary():
@@ -3678,11 +3744,16 @@ async def update_warrant_canary(_admin: dict = Depends(require_admin)):
     """Force canary date update to now (admin-only)."""
     global WARRANT_CANARY_LAST_UPDATED
     WARRANT_CANARY_LAST_UPDATED = datetime.utcnow()
-    log_admin(AuditEvent.ADMIN_ACTION, _admin.get("username", "admin"), {"action": "canary_update"})
+    _save_warrant_canary_date(WARRANT_CANARY_LAST_UPDATED)
+    log_admin(
+        AuditEvent.ADMIN_ACTION,
+        _admin.get("username", "admin"),
+        {"action": "canary_update", "last_updated": WARRANT_CANARY_LAST_UPDATED.strftime("%Y-%m-%d")},
+    )
     return {
         "status": "ok",
         "last_updated": WARRANT_CANARY_LAST_UPDATED.strftime("%Y-%m-%d"),
-        "message": "Canary updated"
+        "message": "Canary updated",
     }
 
 # ============================================================
@@ -3788,6 +3859,49 @@ def get_vendor_level_route(username: str):
 @app.get("/api/vendor-levels")
 def get_all_levels():
     return {"levels": VENDOR_LEVELS}
+
+
+@app.get("/api/affiliate/program")
+def affiliate_program_endpoint():
+    """Public: vendor tier examples + affiliate split rules for the Affiliation page."""
+    return program_static_payload(VENDOR_LEVELS)
+
+
+@app.get("/api/affiliate/leaderboard")
+def affiliate_leaderboard_endpoint():
+    return {
+        "month": datetime.utcnow().strftime("%Y-%m"),
+        "top": leaderboard_current_month(10),
+    }
+
+
+@app.get("/api/affiliate/overview")
+def affiliate_overview_endpoint(session: dict = Depends(get_current_session)):
+    """Authenticated: earnings, attributed volume, referral code, payout history."""
+    uname = session["username"]
+    if uname not in users_db:
+        raise HTTPException(status_code=404, detail="USER_NOT_FOUND")
+    st = stats_for_user(uname)
+    hist = payments_for_user(uname)
+    existing = None
+    for _, data in referrals_db.items():
+        if data.get("owner") == uname:
+            existing = data
+            break
+    if not existing:
+        rc = generate_referral_code(uname)
+        existing = referrals_db[rc]
+    ref_code = existing.get("code")
+    ref_signups = len(existing.get("referrals") or [])
+    return {
+        "stats": {
+            **st,
+            "referral_signups": ref_signups,
+        },
+        "payments": hist[:50],
+        "referral_code": ref_code,
+    }
+
 
 # ============================================================
 # REFERRAL ROUTES
@@ -3928,7 +4042,12 @@ def release_order_funds(order_id: str, data: dict = {}, session: dict = Depends(
                 status_code=501, detail="Mode de funding non pris en charge (utiliser multisig on-chain).",
             )
         try:
-            s = _settle_order_funds_to_vendor(vendor, amount)
+            s = _settle_order_funds_to_vendor(
+                vendor,
+                amount,
+                buyer=order.get("buyer"),
+                order_id=order_id,
+            )
         except RuntimeError:
             raise HTTPException(
                 status_code=503,
@@ -4374,6 +4493,16 @@ async def dms_configure_endpoint(request: Request, _admin: dict = Depends(requir
         interval_hours=data.get("interval_hours", 72),
         action=data.get("action", "shutdown")
     )
+    log_admin(
+        AuditEvent.ADMIN_ACTION,
+        username,
+        {
+            "action": "dms_configure",
+            "enabled": bool(data.get("enabled", False)),
+            "interval_hours": data.get("interval_hours", 72),
+            "action_type": data.get("action", "shutdown"),
+        },
+    )
     return {"status": "success"}
 
 # ============================================================
@@ -4538,7 +4667,12 @@ async def sign_multisig_endpoint(order_id: str, request: Request, session: dict 
             amount = float(cur.get("amount_xmr", 0) or 0)
             if vendor and amount > 0 and not cur.get("settlement"):
                 try:
-                    s = _settle_order_funds_to_vendor(vendor, amount)
+                    s = _settle_order_funds_to_vendor(
+                        vendor,
+                        amount,
+                        buyer=cur.get("buyer"),
+                        order_id=order_id,
+                    )
                     cur["settlement"] = s
                 except RuntimeError:
                     pass
@@ -4600,7 +4734,12 @@ async def admin_resolve_multisig(order_id: str, request: Request, session: dict 
                 o["status"] = "completed"
                 if not o.get("settlement") and o.get("vendor") and o.get("amount_xmr"):
                     try:
-                        s = _settle_order_funds_to_vendor(o["vendor"], float(o["amount_xmr"]))
+                        s = _settle_order_funds_to_vendor(
+                            o["vendor"],
+                            float(o["amount_xmr"]),
+                            buyer=o.get("buyer"),
+                            order_id=order_id,
+                        )
                         o["settlement"] = s
                     except RuntimeError:
                         pass
