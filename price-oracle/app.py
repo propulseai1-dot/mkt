@@ -11,6 +11,13 @@ app = FastAPI(title="SilkGenesis Price Oracle", version="1.0.0")
 REFRESH_SEC = int(os.getenv("PRICE_ORACLE_REFRESH_SEC", "20"))
 ALLOW_CLEARNET = str(os.getenv("PRICE_ORACLE_ALLOW_CLEARNET", "0")).strip().lower() in ("1", "true", "yes", "on")
 ORACLE_TOKEN = (os.getenv("PRICE_ORACLE_TOKEN") or "").strip()
+# Si 0 : /latest ne renvoie jamais le message d'exception brut (evite fuite stack/chemins).
+EXPOSE_ERROR_DETAIL = str(os.getenv("PRICE_ORACLE_EXPOSE_ERROR_DETAIL", "0")).strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
 
 cache = {
     "xmr_usd": float(os.getenv("PRICE_ORACLE_FALLBACK_XMR_USD", "165.0")),
@@ -80,18 +87,24 @@ def _startup():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "oracle_ok": cache["ok"], "source": cache["source"], "timestamp": cache["timestamp"]}
+    err = cache["error"]
+    if err is not None and not EXPOSE_ERROR_DETAIL:
+        err = "oracle_refresh_failed"
+    return {"status": "ok", "oracle_ok": cache["ok"], "source": cache["source"], "timestamp": cache["timestamp"], "error": err}
 
 
 @app.get("/latest")
 def latest(x_oracle_token: Optional[str] = Header(default=None)):
     if ORACLE_TOKEN and (x_oracle_token or "") != ORACLE_TOKEN:
         raise HTTPException(status_code=401, detail="UNAUTHORIZED_ORACLE_CLIENT")
+    err = cache["error"]
+    if err is not None and not EXPOSE_ERROR_DETAIL:
+        err = "oracle_refresh_failed"
     return {
         "xmr_usd": cache["xmr_usd"],
         "btc_usd": cache["btc_usd"],
         "timestamp": cache["timestamp"],
         "source": cache["source"],
         "stale": not cache["ok"],
-        "error": cache["error"],
+        "error": err,
     }

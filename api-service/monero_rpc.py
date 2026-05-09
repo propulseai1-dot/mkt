@@ -1,5 +1,6 @@
 
 
+import builtins
 import requests
 from requests.auth import HTTPDigestAuth
 import json
@@ -17,6 +18,17 @@ from funds_lock import funds_rlock
 # ============================================================
 MONERO_RPC_URL = os.environ.get("MONERO_RPC_URL", "http://127.0.0.1:18082/json_rpc")
 IS_PRODUCTION = os.environ.get("SILKGENESIS_ENV", "development").lower() == "production"
+
+_VERBOSE_LOGS = (not IS_PRODUCTION) or (
+    os.environ.get("SILKGENESIS_VERBOSE_LOGS", "").strip().lower() in ("1", "true", "yes", "on")
+)
+
+
+def _dev__dev_print(*args, **kwargs) -> None:
+    if not _VERBOSE_LOGS:
+        return
+    builtins._dev_print(*args, **kwargs, flush=True)
+
 
 # ============================================================
 # AUTHENTIFICATION RPC - Lue depuis variable d'environnement
@@ -36,15 +48,15 @@ def _load_rpc_credentials():
     env_user = os.environ.get("MONERO_RPC_USER", "")
     env_pass = os.environ.get("MONERO_RPC_PASS", "")
     if env_user and env_pass:
-        print(f"[XMR AUTH] Using RPC credentials from environment variables")
+        _dev_print(f"[XMR AUTH] Using RPC credentials from environment variables")
         return env_user, env_pass
     
     if IS_PRODUCTION:
         raise RuntimeError("MONERO_RPC_USER and MONERO_RPC_PASS are required in production.")
 
     # 2. Fallback: pas d'auth (mode dev - RPC sans login)
-    print("[XMR AUTH] No RPC credentials found - running without auth (development only)")
-    print("[XMR AUTH] For production: set MONERO_RPC_USER and MONERO_RPC_PASS env vars")
+    _dev_print("[XMR AUTH] No RPC credentials found - running without auth (development only)")
+    _dev_print("[XMR AUTH] For production: set MONERO_RPC_USER and MONERO_RPC_PASS env vars")
     return "", ""
 
 MONERO_RPC_USER, MONERO_RPC_PASS = _load_rpc_credentials()
@@ -117,7 +129,7 @@ class MoneroRPC:
             
             if "error" in result:
                 err = result["error"]
-                print(f"[XMR RPC ERROR] {method}: {err.get('message', err)}")
+                _dev_print(f"[XMR RPC ERROR] {method}: {err.get('message', err)}")
                 return None
             
             self._connected = True
@@ -125,11 +137,11 @@ class MoneroRPC:
         
         except requests.exceptions.ConnectionError:
             if self._connected:
-                print(f"[XMR] Lost connection to monero-wallet-rpc at {self.rpc_url}")
+                _dev_print(f"[XMR] Lost connection to monero-wallet-rpc at {self.rpc_url}")
                 self._connected = False
             return None
         except Exception as e:
-            print(f"[XMR RPC] {method} failed: {e}")
+            _dev_print(f"[XMR RPC] {method} failed: {e}")
             return None
     
     def is_connected(self) -> bool:
@@ -449,7 +461,7 @@ class EscrowManager:
                         })
         
         except Exception as e:
-            print(f"[XMR SCAN ERROR] {e}")
+            _dev_print(f"[XMR SCAN ERROR] {e}")
         
         return newly_confirmed
     
@@ -672,14 +684,14 @@ class EscrowManager:
         self._running = True
         self._scan_thread = threading.Thread(target=self._scan_loop, daemon=True)
         self._scan_thread.start()
-        print(f"[XMR SCANNER] Started - scanning every {SCAN_INTERVAL_SECONDS}s")
+        _dev_print(f"[XMR SCANNER] Started - scanning every {SCAN_INTERVAL_SECONDS}s")
     
     def stop_scanner(self):
         """Stop le thread de scan"""
         self._running = False
         if self._scan_thread:
             self._scan_thread.join(timeout=5)
-        print("[XMR SCANNER] Stopped")
+        _dev_print("[XMR SCANNER] Stopped")
     
     def _scan_loop(self):
         """Boucle de scan in the background"""
@@ -687,11 +699,11 @@ class EscrowManager:
             try:
                 confirmed = self.scan_incoming_transactions()
                 if confirmed:
-                    print(f"[XMR SCANNER] {len(confirmed)} new confirmed transaction(s)")
+                    _dev_print(f"[XMR SCANNER] {len(confirmed)} new confirmed transaction(s)")
                     for tx in confirmed:
-                        print(f"  ✓ {tx['amount_xmr']:.6f} XMR - Order: {tx['order_id']}")
+                        _dev_print(f"  ✓ {tx['amount_xmr']:.6f} XMR - Order: {tx['order_id']}")
             except Exception as e:
-                print(f"[XMR SCANNER ERROR] {e}")
+                _dev_print(f"[XMR SCANNER ERROR] {e}")
             
             time.sleep(SCAN_INTERVAL_SECONDS)
 
@@ -727,15 +739,15 @@ def init_escrow(orders_db: dict, users_db: dict) -> EscrowManager:
     # Check RPC connection
     if rpc.is_connected():
         version = rpc.get_version()
-        print(f"[XMR] Connected to monero-wallet-rpc v{version}")
+        _dev_print(f"[XMR] Connected to monero-wallet-rpc v{version}")
         balance = rpc.get_balance()
         if balance:
-            print(f"[XMR] Master Wallet Balance: {balance['balance_xmr']:.6f} XMR (unlocked: {balance['unlocked_xmr']:.6f} XMR)")
+            _dev_print(f"[XMR] Master Wallet Balance: {balance['balance_xmr']:.6f} XMR (unlocked: {balance['unlocked_xmr']:.6f} XMR)")
     else:
-        print(f"[XMR] WARNING: monero-wallet-rpc not available at {MONERO_RPC_URL}")
+        _dev_print(f"[XMR] WARNING: monero-wallet-rpc not available at {MONERO_RPC_URL}")
         if IS_PRODUCTION:
             raise RuntimeError("RPC unavailable in production. Refusing to start with simulated mode.")
-        print(f"[XMR] Running in OFFLINE mode - transactions may be simulated (development only)")
+        _dev_print(f"[XMR] Running in OFFLINE mode - transactions may be simulated (development only)")
     
     return _escrow_instance
 

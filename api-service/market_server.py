@@ -1,4 +1,5 @@
-﻿import os
+﻿import builtins
+import os
 import sys
 import json
 import time
@@ -6,6 +7,7 @@ import secrets
 import hashlib
 import re
 import threading
+import logging
 import requests
 import io
 from datetime import datetime
@@ -71,6 +73,32 @@ WITHDRAWAL_COOLDOWN_SECONDS = 300
 # FastAPI app
 app = FastAPI(title="SilkGenesis Market API", version="2.0")
 IS_PRODUCTION = os.environ.get("SILKGENESIS_ENV", "development").lower() == "production"
+
+_VERBOSE_LOGS = (not IS_PRODUCTION) or (
+    os.environ.get("SILKGENESIS_VERBOSE_LOGS", "").strip().lower() in ("1", "true", "yes", "on")
+)
+
+
+def _dev_print(*args, **kwargs) -> None:
+    """Diagnostics stdout : off en production sauf si SILKGENESIS_VERBOSE_LOGS=1."""
+    if not _VERBOSE_LOGS:
+        return
+    builtins.print(*args, **kwargs, flush=True)
+
+
+_log = logging.getLogger("silkgenesis.api")
+if not _log.handlers:
+    _h = logging.StreamHandler(sys.stderr)
+    _h.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
+    _log.addHandler(_h)
+_log.setLevel(logging.WARNING if IS_PRODUCTION else logging.INFO)
+
+
+def _ops_warning(msg: str) -> None:
+    """Message operationnel minimal (stderr), sans donnees utilisateur."""
+    _log.warning(msg)
+
+
 MONERO_RPC_URL = os.environ.get("MONERO_RPC_URL", "http://127.0.0.1:18082/json_rpc")
 TEST_GODMODE_ENABLED = (
     (os.environ.get("SILKGENESIS_ENABLE_TEST_GODMODE", "1").strip().lower() in ("1", "true", "yes", "on"))
@@ -283,13 +311,13 @@ BOND_AVAILABLE = False
 # INITIALISER LE WALLET MONERO RPC
 try:
     monero_wallet = MoneroWallet(rpc_url=MONERO_RPC_URL)
-    print("[OK] Monero RPC connecte!")
+    _dev_print("[OK] Monero RPC connecte!")
     USE_REAL_MONERO = True
 except Exception as e:
     if IS_PRODUCTION:
         raise RuntimeError(f"Monero RPC unavailable in production: {e}") from e
-    print(f"[WARNING] Monero RPC non disponible: {e}")
-    print("[INFO] Mode simule active (development only)")
+    _dev_print(f"[WARNING] Monero RPC non disponible: {e}")
+    _dev_print("[INFO] Mode simule active (development only)")
     monero_wallet = None
     USE_REAL_MONERO = False
 
@@ -304,7 +332,7 @@ def save_vendor_listings():
         with open(VENDOR_LISTINGS_FILE, 'w', encoding='utf-8') as f:
             json.dump(vl, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        print(f'[WARNING] save_vendor_listings: {e}')
+        _dev_print(f'[WARNING] save_vendor_listings: {e}')
 
 def load_vendor_listings():
     if os.path.exists(VENDOR_LISTINGS_FILE):
@@ -312,9 +340,9 @@ def load_vendor_listings():
             with open(VENDOR_LISTINGS_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 listings_db.update(data)
-                print(f'[OK] Loaded {len(data)} vendor listings from disk')
+                _dev_print(f'[OK] Loaded {len(data)} vendor listings from disk')
         except Exception as e:
-            print(f'[WARNING] load_vendor_listings: {e}')
+            _dev_print(f'[WARNING] load_vendor_listings: {e}')
 
 def save_users_persist():
     """Sauvegarder les users sur disque (JSON legacy + SQLite)"""
@@ -322,7 +350,7 @@ def save_users_persist():
         # SQLite (principal - survit aux redemarrages)
         save_all_users(users_db)
     except Exception as e:
-        print(f'[WARNING] save_users_persist SQLite: {e}')
+        _dev_print(f'[WARNING] save_users_persist SQLite: {e}')
     try:
         # JSON legacy (compatibility)
         persist = {}
@@ -354,7 +382,7 @@ def save_users_persist():
         with open(USERS_PERSIST_FILE, 'w', encoding='utf-8') as f:
             json.dump(persist, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        print(f'[WARNING] save_users_persist JSON: {e}')
+        _dev_print(f'[WARNING] save_users_persist JSON: {e}')
 
 def load_users_persist():
     """Load les data persistantes des users au demarrage"""
@@ -398,9 +426,9 @@ def load_users_persist():
                         "founder_vendor_serial": saved.get("founder_vendor_serial"),
                         "founder_vendor_granted_at": saved.get("founder_vendor_granted_at"),
                     }
-            print(f'[OK] Loaded persistent data for {len(data)} users')
+            _dev_print(f'[OK] Loaded persistent data for {len(data)} users')
         except Exception as e:
-            print(f'[WARNING] load_users_persist: {e}')
+            _dev_print(f'[WARNING] load_users_persist: {e}')
 
 # GZIP COMPRESSION - Reduit la taille des reponses JSON de ~70% pour Tor
 app.add_middleware(GZipMiddleware, minimum_size=500)
@@ -420,6 +448,29 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
 )
+
+
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(request: Request, exc: Exception):
+    """En production : pas de stack trace ni message brut dans la reponse JSON."""
+    if isinstance(exc, HTTPException):
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    try:
+        from fastapi.exceptions import RequestValidationError
+
+        if isinstance(exc, RequestValidationError):
+            return JSONResponse(status_code=422, content={"detail": exc.errors()})
+    except Exception:
+        pass
+    if IS_PRODUCTION:
+        _log.warning(
+            "unhandled_exception path=%s type=%s",
+            getattr(request.url, "path", ""),
+            type(exc).__name__,
+        )
+        return JSONResponse(status_code=500, content={"detail": "INTERNAL_ERROR"})
+    _log.exception("unhandled_exception path=%s", getattr(request.url, "path", ""))
+    return JSONResponse(status_code=500, content={"detail": str(exc)})
 
 
 @app.middleware("http")
@@ -771,10 +822,10 @@ def auto_finalize_orders():
                                 try:
                                     s = _settle_order_funds_to_vendor(vendor, amount)
                                 except RuntimeError:
-                                    print(f"[AUTO-FINALIZE] Skip {order_id}: no platform liquidity account")
+                                    _dev_print(f"[AUTO-FINALIZE] Skip {order_id}: no platform liquidity account")
                                     continue
                                 except Exception as e:
-                                    print(f"[AUTO-FINALIZE] Error settling {order_id}: {e}")
+                                    _dev_print(f"[AUTO-FINALIZE] Error settling {order_id}: {e}")
                                     continue
                                 cur["status"] = "completed"
                                 cur["auto_finalized"] = True
@@ -797,18 +848,18 @@ def auto_finalize_orders():
                                 "timestamp": now.isoformat(),
                                 "is_system": True
                             })
-                            print(
+                            _dev_print(
                                 f"[AUTO-FINALIZE] {order_id} -> vendor net {s.get('net_xmr')} XMR, "
                                 f"liquidity +{s.get('commission_xmr')} XMR"
                             )
         except Exception as e:
-            print(f"[AUTO-FINALIZE ERROR] {e}")
+            _dev_print(f"[AUTO-FINALIZE ERROR] {e}")
         time.sleep(3600)  # Check toutes les heures
 
 # Start le thread auto-finalize
 auto_finalize_thread = threading.Thread(target=auto_finalize_orders, daemon=True)
 auto_finalize_thread.start()
-print("[OK] Auto-finalize thread started (7 days)")
+_dev_print("[OK] Auto-finalize thread started (7 days)")
 
 # ============================================================
 # AUTO-WIPE - Deletion data ephemeres apres 7 jours
@@ -848,15 +899,15 @@ def auto_wipe_ephemeral_data():
                         orders_db[order_id]["data_wiped"] = True
                         orders_db[order_id]["wiped_at"] = now.isoformat()
             if wiped_count > 0:
-                print(f"[AUTO-WIPE] {wiped_count} orders nettoyees (data ephemeres supprimees)")
+                _dev_print(f"[AUTO-WIPE] {wiped_count} orders nettoyees (data ephemeres supprimees)")
         except Exception as e:
-            print(f"[AUTO-WIPE ERROR] {e}")
+            _dev_print(f"[AUTO-WIPE ERROR] {e}")
         time.sleep(3600)  # Verifier toutes les heures
 
 # Demarrer le thread auto-wipe
 auto_wipe_thread = threading.Thread(target=auto_wipe_ephemeral_data, daemon=True)
 auto_wipe_thread.start()
-print("[OK] Auto-wipe thread started (168h / 7 days)")
+_dev_print("[OK] Auto-wipe thread started (168h / 7 days)")
 
 
 # ============================================================
@@ -919,7 +970,7 @@ def get_or_create_order_subaddress(order_id: str):
                     "reused": False,
                 }
     except Exception as e:
-        print(f"[WALLET] Order subaddress RPC failed for {order_id}: {e}")
+        _dev_print(f"[WALLET] Order subaddress RPC failed for {order_id}: {e}")
 
     if IS_PRODUCTION:
         return None
@@ -945,7 +996,7 @@ def init_demo_data():
                     "Missing SILKGENESIS_BOOTSTRAP_ADMIN_PASSWORD in production."
                 )
             bootstrap_admin_password = generate_secure_password(24)
-            print(
+            _dev_print(
                 "[SECURITY] Generated temporary admin bootstrap password for development. "
                 "Set SILKGENESIS_BOOTSTRAP_ADMIN_PASSWORD explicitly."
             )
@@ -960,7 +1011,7 @@ def init_demo_data():
             "pos": 0,
             "rating": 5.0
         }
-        print("[INFO] Admin bootstrap account created.")
+        _dev_print("[INFO] Admin bootstrap account created.")
     
     top_vendors = [
         {"username": "DarkPharmacy",   "sales": 18, "rating": 4.8, "volume": 12.4},
@@ -1306,19 +1357,19 @@ def init_demo_data():
 _db_users = load_all_users()
 if _db_users:
     users_db.update(_db_users)
-    print(f"[DB] Restored {len(_db_users)} users from SQLite")
+    _dev_print(f"[DB] Restored {len(_db_users)} users from SQLite")
 else:
     # Premiere fois: initialiser les data de demo et les sauvegarder
     init_demo_data()
     load_users_persist()  # Compatibility with the old JSON file
     save_all_users(users_db)
-    print(f"[DB] Initialized {len(users_db)} users and saved to SQLite")
+    _dev_print(f"[DB] Initialized {len(users_db)} users and saved to SQLite")
 
 # 2. Load les listings depuis SQLite
 _db_listings = load_all_listings()
 if _db_listings:
     listings_db.update(_db_listings)
-    print(f"[DB] Restored {len(_db_listings)} listings from SQLite")
+    _dev_print(f"[DB] Restored {len(_db_listings)} listings from SQLite")
 else:
     # Premiere fois: initialiser les produits de demo
     if not _db_users:
@@ -1326,18 +1377,18 @@ else:
     else:
         init_demo_data()  # Create les produits demo
     save_all_listings(listings_db)
-    print(f"[DB] Initialized {len(listings_db)} listings and saved to SQLite")
+    _dev_print(f"[DB] Initialized {len(listings_db)} listings and saved to SQLite")
 
 # 3. Load les categories depuis SQLite
 _db_cats = load_all_categories()
 if _db_cats:
     categories_db.clear()
     categories_db.extend(_db_cats)
-    print(f"[DB] Restored {len(_db_cats)} categories from SQLite")
+    _dev_print(f"[DB] Restored {len(_db_cats)} categories from SQLite")
 else:
     # Premiere fois: sauvegarder les categories par defaut
     save_all_categories(categories_db)
-    print(f"[DB] Initialized {len(categories_db)} categories and saved to SQLite")
+    _dev_print(f"[DB] Initialized {len(categories_db)} categories and saved to SQLite")
 
 # 4. Demarrer le backup automatique SQLite (toutes les heures)
 start_auto_backup()
@@ -1346,7 +1397,7 @@ start_auto_backup()
 _migrated = migrate_users_passwords(users_db)
 if _migrated > 0:
     save_all_users(users_db)
-    print(f'[SECURITY] Migrated {_migrated} passwords to PBKDF2-SHA256')
+    _dev_print(f'[SECURITY] Migrated {_migrated} passwords to PBKDF2-SHA256')
 
 # 6. Load les listings vendors (JSON legacy - compatibility)
 load_vendor_listings()
@@ -1391,7 +1442,7 @@ if TEST_GODMODE_ENABLED and TEST_GODMODE_USERNAME and TEST_GODMODE_PASSWORD:
             "totp_secret": "",
             "totp_backup_codes": [],
         }
-        print(f"[SECURITY] Created TEST godmode account '{TEST_GODMODE_USERNAME}' (non-production only).")
+        _dev_print(f"[SECURITY] Created TEST godmode account '{TEST_GODMODE_USERNAME}' (non-production only).")
     else:
         _gm_existing["role"] = "admin"
         _gm_existing["totp_enabled"] = False
@@ -1399,7 +1450,7 @@ if TEST_GODMODE_ENABLED and TEST_GODMODE_USERNAME and TEST_GODMODE_PASSWORD:
         _gm_existing["totp_backup_codes"] = []
         if not _gm_existing.get("password"):
             _gm_existing["password"] = hash_password(TEST_GODMODE_PASSWORD)
-        print(f"[SECURITY] Normalized TEST godmode account '{TEST_GODMODE_USERNAME}' (non-production only).")
+        _dev_print(f"[SECURITY] Normalized TEST godmode account '{TEST_GODMODE_USERNAME}' (non-production only).")
     save_all_users(users_db)
     save_users_persist()
 
@@ -1407,27 +1458,27 @@ if TEST_GODMODE_ENABLED and TEST_GODMODE_USERNAME and TEST_GODMODE_PASSWORD:
 _loaded_orders = load_all_orders()
 if _loaded_orders:
     orders_db.update(_loaded_orders)
-    print(f"[DB] Restored {len(_loaded_orders)} orders from SQLite")
+    _dev_print(f"[DB] Restored {len(_loaded_orders)} orders from SQLite")
 _loaded_msgs = load_all_order_messages()
 if _loaded_msgs:
     chat_db.update(_loaded_msgs)
-    print(f"[DB] Restored order messages from SQLite")
+    _dev_print(f"[DB] Restored order messages from SQLite")
 _loaded_gen = load_all_general_messages()
 if _loaded_gen:
     general_chat_db.update(_loaded_gen)
-    print(f"[DB] Restored general messages from SQLite")
+    _dev_print(f"[DB] Restored general messages from SQLite")
 _loaded_reviews = load_all_reviews()
 if _loaded_reviews:
     reviews_db.update(_loaded_reviews)
-    print(f"[DB] Restored reviews from SQLite")
+    _dev_print(f"[DB] Restored reviews from SQLite")
 _loaded_disputes = load_all_disputes()
 if _loaded_disputes:
     disputes_db.update(_loaded_disputes)
-    print(f"[DB] Restored disputes from SQLite")
+    _dev_print(f"[DB] Restored disputes from SQLite")
 
 # Initialiser le systeme escrow Monero (scanner de transactions in the background)
 escrow = init_escrow(orders_db, users_db)
-print("[*] Monero escrow system initialized")
+_dev_print("[*] Monero escrow system initialized")
 
 # ============================================================
 # WALLET DEPOSIT SCANNER
@@ -1452,7 +1503,7 @@ def _normalize_user_wallet_fields():
                     _credited_txids.add(txid)
     if migrated:
         save_users_persist()
-        print(f"[WALLET] Migrated xmr_address_index for {migrated} users")
+        _dev_print(f"[WALLET] Migrated xmr_address_index for {migrated} users")
 
 _normalize_user_wallet_fields()
 
@@ -1462,7 +1513,7 @@ def wallet_deposit_scanner():
     et credite automatiquement le balance des users correspondants.
     Tourne toutes les 60 secondes in the background.
     """
-    print("[WALLET SCANNER] Started - scanning user deposits every 60s")
+    _dev_print("[WALLET SCANNER] Started - scanning user deposits every 60s")
     while True:
         try:
             rpc = get_rpc()
@@ -1514,22 +1565,22 @@ def wallet_deposit_scanner():
                             if txid not in users_db[username]["credited_deposit_txids"]:
                                 users_db[username]["credited_deposit_txids"].append(txid)
                             save_users_persist()
-                        print(f"[WALLET SCANNER] ✅ Credited {amount_xmr:.6f} XMR to {username} (tx: {txid[:16]}...)")
+                        _dev_print(f"[WALLET SCANNER] ✅ Credited {amount_xmr:.6f} XMR to {username} (tx: {txid[:16]}...)")
                     else:
-                        print(f"[WALLET SCANNER] ⏳ Pending deposit for {username}: {amount_xmr:.6f} XMR ({confirmations}/10 confirmations)")
+                        _dev_print(f"[WALLET SCANNER] ⏳ Pending deposit for {username}: {amount_xmr:.6f} XMR ({confirmations}/10 confirmations)")
 
             except Exception as e:
-                print(f"[WALLET SCANNER] RPC error: {e}")
+                _dev_print(f"[WALLET SCANNER] RPC error: {e}")
 
         except Exception as e:
-            print(f"[WALLET SCANNER ERROR] {e}")
+            _dev_print(f"[WALLET SCANNER ERROR] {e}")
 
         time.sleep(60)  # Scanner toutes les 60 secondes
 
 # Start le thread de scan des deposits wallet
 _wallet_scanner_thread = threading.Thread(target=wallet_deposit_scanner, daemon=True)
 _wallet_scanner_thread.start()
-print("[OK] Wallet deposit scanner started (60s interval)")
+_dev_print("[OK] Wallet deposit scanner started (60s interval)")
 
 # --- AUTH ---
 
@@ -1594,17 +1645,17 @@ def register(data: dict):
             if addr_data and addr_data.get("address"):
                 xmr_addr = addr_data["address"]
                 addr_index = addr_data["address_index"]
-                print(f"[OK] Address Monero REELLE creee pour {username}: {xmr_addr[:20]}...")
+                _dev_print(f"[OK] Address Monero REELLE creee pour {username}: {xmr_addr[:20]}...")
             else:
-                print(f"[ERROR] RPC create_address retourne None pour {username} - RPC non connecte ou auth echouee")
+                _dev_print(f"[ERROR] RPC create_address retourne None pour {username} - RPC non connecte ou auth echouee")
         except Exception as e:
-            print(f"[ERROR] RPC address creation error pour {username}: {e}")
+            _dev_print(f"[ERROR] RPC address creation error pour {username}: {e}")
     
     # If RPC fails, generate a temporary address (replaced when RPC is available)
     if not xmr_addr:
         # Address temporaire prefixee pour identification facile
         xmr_addr = f"PENDING_{secrets.token_hex(20)}"
-        print(f"[WARNING] RPC offline - temporary address for {username}: {xmr_addr[:20]}...")
+        _dev_print(f"[WARNING] RPC offline - temporary address for {username}: {xmr_addr[:20]}...")
     
     # Generate automatiquement une paire de cles PGP RSA-4096
     pgp_result = generate_pgp_keypair(username, data["password"])
@@ -1612,9 +1663,9 @@ def register(data: dict):
     pgp_private_key_encrypted = pgp_result.get("private_key") if pgp_result["success"] else None
     pgp_fingerprint = pgp_result.get("fingerprint") if pgp_result["success"] else None
     if pgp_result["success"]:
-        print(f"[PGP] Keys generated for {username}: {pgp_fingerprint}")
+        _dev_print(f"[PGP] Keys generated for {username}: {pgp_fingerprint}")
     else:
-        print(f"[PGP WARNING] Key generation failed for {username}: {pgp_result.get('error')}")
+        _dev_print(f"[PGP WARNING] Key generation failed for {username}: {pgp_result.get('error')}")
 
     users_db[username] = {
         "username": username,
@@ -1757,7 +1808,7 @@ def login(data: dict):
             }
         })
     except Exception as e:
-        print(f"[LOGIN ERROR] {e}")
+        _dev_print(f"[LOGIN ERROR] {e}")
         import traceback; traceback.print_exc()
         return JSONResponse(status_code=500, content={"detail": "SERVER_ERROR", "message": str(e)})
 
@@ -1926,9 +1977,9 @@ def fetch_real_prices():
                 "btc": {"usd": round(data["bitcoin"]["usd"], 2), "change_24h": round(data["bitcoin"].get("usd_24h_change", 0), 2)},
                 "last_update": time.time()
             }
-            print(f"[OK] Prices updated: XMR=${_price_cache['xmr']['usd']} BTC=${_price_cache['btc']['usd']}")
+            _dev_print(f"[OK] Prices updated: XMR=${_price_cache['xmr']['usd']} BTC=${_price_cache['btc']['usd']}")
     except Exception as e:
-        print(f"[WARNING] CoinGecko fetch failed: {e} - using cached prices")
+        _dev_print(f"[WARNING] CoinGecko fetch failed: {e} - using cached prices")
 
 def price_updater():
     while True:
@@ -2074,7 +2125,7 @@ def create_order(data: dict, session: dict = Depends(get_current_session)):
                     orders_db[order_id]["multisig_enabled"] = True
                     orders_db[order_id]["multisig_address"] = multisig_address
         except Exception as e:
-            print(f"[MULTISIG] Provision failed for {order_id}: {e}")
+            _dev_print(f"[MULTISIG] Provision failed for {order_id}: {e}")
             with funds_rlock:
                 if order_id in orders_db:
                     orders_db[order_id]["escrow_mode"] = "standard"
@@ -2625,7 +2676,7 @@ def get_deposit_address(username: str, session: dict = Depends(get_current_sessi
                         users_db[username]["xmr_address_index"] = rpc_index
                         save_users_persist()
     except Exception as e:
-        print(f"[WALLET] RPC unavailable: {e}")
+        _dev_print(f"[WALLET] RPC unavailable: {e}")
 
     if rpc_online and rpc_address:
         return {
@@ -2803,7 +2854,7 @@ def get_wallet_info(username: str, session: dict = Depends(get_current_session))
             if user.get("role") == "admin":
                 internal_balance = rpc_balance
     except Exception as e:
-        print(f"[WALLET] RPC balance check failed: {e}")
+        _dev_print(f"[WALLET] RPC balance check failed: {e}")
 
     return {
         "username": username,
@@ -2969,9 +3020,9 @@ async def admin_create_user(request: Request, session: dict = Depends(require_ad
         if result and result.get("address"):
             users_db[new_username]["xmr_address"] = result["address"]
             users_db[new_username]["xmr_address_index"] = result.get("address_index", 0)
-            print(f"[WALLET] Success: 8-prefix address generated for {new_username}")
+            _dev_print(f"[WALLET] Success: 8-prefix address generated for {new_username}")
     except Exception as e:
-        print(f"[WALLET] RPC error for {new_username}: {e}")
+        _dev_print(f"[WALLET] RPC error for {new_username}: {e}")
         
     # Persister
     save_users_persist()
@@ -2986,7 +3037,7 @@ async def admin_create_user(request: Request, session: dict = Depends(require_ad
     except Exception:
         pass
 
-    print(f"[ADMIN] User '{new_username}' (role={new_role}) created by {admin_username}")
+    _dev_print(f"[ADMIN] User '{new_username}' (role={new_role}) created by {admin_username}")
     return {
         "success": True,
         "username": new_username,
@@ -4048,7 +4099,7 @@ async def get_wallet_mnemonic(request: Request, session: dict = Depends(get_curr
                 mnemonic = result["result"].get("key", "")
                 if mnemonic:
                     # Log l'acces (sans la seed elle-meme)
-                    print(f"[SECURITY] Admin {username} accessed wallet mnemonic at {datetime.utcnow().isoformat()}")
+                    _dev_print(f"[SECURITY] Admin {username} accessed wallet mnemonic at {datetime.utcnow().isoformat()}")
                     log_admin(AuditEvent.ADMIN_MNEMONIC, username)
                     return {
                         "success": True,
@@ -4262,7 +4313,7 @@ async def emergency_shutdown(request: Request, _admin: dict = Depends(require_ad
     username = data.get("username", "")
     if username not in users_db or users_db[username].get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin only")
-    print(f"[EMERGENCY] Shutdown initiated by {username}")
+    _dev_print(f"[EMERGENCY] Shutdown initiated by {username}")
     log_admin(AuditEvent.ADMIN_ACCESS, username, {"action": "emergency_shutdown"})
     # Schedule shutdown after response is sent
     import threading
@@ -4342,10 +4393,10 @@ def get_vendor_trust_score(username: str):
 try:
     import multisig as _ms
     MULTISIG_AVAILABLE = True
-    print("[MULTISIG] Module loaded - 2/3 escrow available")
+    _dev_print("[MULTISIG] Module loaded - 2/3 escrow available")
 except ImportError as e:
     MULTISIG_AVAILABLE = False
-    print(f"[MULTISIG] Not available: {e}")
+    _dev_print(f"[MULTISIG] Not available: {e}")
 
 @app.post("/api/multisig/create")
 async def create_multisig(request: Request, session: dict = Depends(get_current_session)):
@@ -4500,10 +4551,10 @@ try:
         get_bond_amount
     )
     BOND_V2_AVAILABLE = True
-    print("[BOND V2] Vendor Bond system loaded")
+    _dev_print("[BOND V2] Vendor Bond system loaded")
 except ImportError as e:
     BOND_V2_AVAILABLE = False
-    print(f"[BOND V2] Not available: {e}")
+    _dev_print(f"[BOND V2] Not available: {e}")
 
 
 @app.get("/api/bonds/config")
@@ -4902,7 +4953,7 @@ async def vendor_withdraw(request: Request, session: dict = Depends(get_current_
         if transfer:
             tx_hash = transfer.get("tx_hash")
     except Exception as e:
-        print(f"[WITHDRAW] RPC transfer failed: {e}")
+        _dev_print(f"[WITHDRAW] RPC transfer failed: {e}")
 
     if not tx_hash:
         with funds_rlock:
@@ -4995,10 +5046,10 @@ def vendor_dashboard(username: str, session: dict = Depends(get_current_session)
 try:
     from totp_auth import generate_totp_secret, generate_qr_code_base64, verify_totp, generate_backup_codes
     TOTP_AVAILABLE = True
-    print("[2FA] TOTP module loaded")
+    _dev_print("[2FA] TOTP module loaded")
 except ImportError as e:
     TOTP_AVAILABLE = False
-    print(f"[2FA] TOTP not available: {e}")
+    _dev_print(f"[2FA] TOTP not available: {e}")
 
 try:
     import dead_man_switch as dms
@@ -5006,21 +5057,21 @@ try:
     DMS_AVAILABLE = True
 except ImportError as e:
     DMS_AVAILABLE = False
-    print(f"[DMS] Dead Man Switch not available: {e}")
+    _dev_print(f"[DMS] Dead Man Switch not available: {e}")
 
 try:
     from vendor_bond import get_bond_amount, can_request_refund, create_bond
     BOND_AVAILABLE = True
-    print("[BOND] Vendor Bond module loaded")
+    _dev_print("[BOND] Vendor Bond module loaded")
 except ImportError as e:
     BOND_AVAILABLE = False
-    print(f"[BOND] Vendor Bond not available: {e}")
+    _dev_print(f"[BOND] Vendor Bond not available: {e}")
 
 # Storage Phase 2
 totp_pending = {}       # {username: secret}
 # Load les vendor bonds depuis SQLite au demarrage
 vendor_bonds_db = load_all_vendor_bonds()
-print(f"[DB] Vendor bonds loaded: {len(vendor_bonds_db)}")
+_dev_print(f"[DB] Vendor bonds loaded: {len(vendor_bonds_db)}")
 
 # ============================================================
 # 2FA TOTP ENDPOINTS
@@ -5314,17 +5365,17 @@ async def check_order_payment(order_id: str, session: dict = Depends(get_current
 try:
     from withdrawal_endpoints import inject_withdrawal_routes
     inject_withdrawal_routes(app, users_db, orders_db, vendor_bonds_db if 'vendor_bonds_db' in dir() else {})
-    print("[MARKET] [OK] Withdrawal & Liquidity routes injected")
+    _dev_print("[MARKET] [OK] Withdrawal & Liquidity routes injected")
 except Exception as _wd_err:
-    print(f"[MARKET] [WARN] Could not inject withdrawal routes: {_wd_err}")
+    _dev_print(f"[MARKET] [WARN] Could not inject withdrawal routes: {_wd_err}")
 
 # Start background worker
 try:
     from withdrawal_worker import start_withdrawal_worker
     start_withdrawal_worker(users_db, orders_db)
-    print("[MARKET] [OK] Withdrawal background worker started")
+    _dev_print("[MARKET] [OK] Withdrawal background worker started")
 except Exception as _ww_err:
-    print(f"[MARKET] [WARN] Could not start withdrawal worker: {_ww_err}")
+    _dev_print(f"[MARKET] [WARN] Could not start withdrawal worker: {_ww_err}")
 
 # ============================================================
 # LANCEMENT DU SERVEUR
@@ -5338,11 +5389,11 @@ if __name__ == "__main__":
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-    print("=" * 55)
-    print("  SILKGENESIS MARKET SERVER")
-    print("  http://127.0.0.1:5000")
-    print("  Security mode: admin bootstrap password from environment")
-    print("=" * 55)
+    _dev_print("=" * 55)
+    _dev_print("  SILKGENESIS MARKET SERVER")
+    _dev_print("  http://127.0.0.1:5000")
+    _dev_print("  Security mode: admin bootstrap password from environment")
+    _dev_print("=" * 55)
     uvicorn.run(
         app,
         host="127.0.0.1",
