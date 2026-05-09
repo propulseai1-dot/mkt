@@ -9,7 +9,7 @@ from fastapi import FastAPI, Header, HTTPException
 app = FastAPI(title="SilkGenesis Price Oracle", version="1.0.0")
 
 REFRESH_SEC = int(os.getenv("PRICE_ORACLE_REFRESH_SEC", "20"))
-ALLOW_CLEARNET = str(os.getenv("PRICE_ORACLE_ALLOW_CLEARNET", "1")).strip().lower() in ("1", "true", "yes", "on")
+ALLOW_CLEARNET = str(os.getenv("PRICE_ORACLE_ALLOW_CLEARNET", "0")).strip().lower() in ("1", "true", "yes", "on")
 ORACLE_TOKEN = (os.getenv("PRICE_ORACLE_TOKEN") or "").strip()
 
 cache = {

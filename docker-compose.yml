@@ -1,7 +1,8 @@
 # SilkGenesis — stack prod Tor (gateway Tor+Nginx + API + Monero RPC)
-# Prerequis : cp env.example .env && editer .env
+# Prerequis : cp env.example .env && editer .env (MONERO_RPC_URL obligatoire selon ton setup)
 # Build front : cd frontend && npm ci && npm run build
 # Demarrage : docker compose up -d --build
+# Wallet Docker optionnel : docker compose --profile bundled-monero up -d --build
 #
 # L'API utilise SQLite + JSON sous SILKGENESIS_DATA_DIR (/app/data), pas PostgreSQL.
 
@@ -28,13 +29,13 @@ services:
     depends_on:
       price-oracle:
         condition: service_started
-      monero-rpc:
-        condition: service_started
     env_file:
       - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       SILKGENESIS_DATA_DIR: /app/data
-      MONERO_RPC_URL: http://monero-rpc:18083/json_rpc
+      MONERO_RPC_URL: ${MONERO_RPC_URL:-http://host.docker.internal:18082/json_rpc}
       PRICE_ORACLE_URL: http://price-oracle:9000/latest
     volumes:
       - silkgenesis_prod_data:/app/data
@@ -63,7 +64,7 @@ services:
       - .env
     environment:
       PRICE_ORACLE_REFRESH_SEC: ${PRICE_ORACLE_REFRESH_SEC:-20}
-      PRICE_ORACLE_ALLOW_CLEARNET: ${PRICE_ORACLE_ALLOW_CLEARNET:-1}
+      PRICE_ORACLE_ALLOW_CLEARNET: ${PRICE_ORACLE_ALLOW_CLEARNET:-0}
       PRICE_ORACLE_TOKEN: ${PRICE_ORACLE_TOKEN:-}
       PRICE_ORACLE_FALLBACK_XMR_USD: ${PRICE_ORACLE_FALLBACK_XMR_USD:-165.0}
       PRICE_ORACLE_FALLBACK_BTC_USD: ${PRICE_ORACLE_FALLBACK_BTC_USD:-74000.0}
@@ -73,7 +74,11 @@ services:
       - silk-net
     restart: unless-stopped
 
+  # Optionnel : docker compose --profile bundled-monero up -d
+  # Sinon utilise monero-wallet-rpc sur l'hote et MONERO_RPC_URL=http://host.docker.internal:18082 (ou reseau equivalent).
   monero-rpc:
+    profiles:
+      - bundled-monero
     image: sethforprivacy/monero-wallet-rpc:latest
     container_name: sg_monero_rpc
     env_file:

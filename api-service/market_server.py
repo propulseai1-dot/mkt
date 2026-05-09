@@ -10,7 +10,7 @@ import requests
 import io
 from datetime import datetime
 from typing import Optional, List
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from funds_lock import funds_rlock
 
@@ -95,6 +95,18 @@ DEMO_VENDOR_USERNAMES = [
     "SecureServices",
 ]
 ACTIVE_DEMO_FOUNDER_VENDORS = DEMO_VENDOR_USERNAMES[:5]
+
+# Demo listing images : SVG inline uniquement (pas de fetch clearnet type Unsplash pour les utilisateurs Tor).
+_DEMO_LISTING_IMG_SVG = (
+    "data:image/svg+xml;charset=utf-8,"
+    + quote(
+        "<svg xmlns='http://www.w3.org/2000/svg' width='600' height='400'>"
+        "<rect fill='#18181b' width='100%' height='100%'/>"
+        "<text x='50%' y='50%' dominant-baseline='middle' text-anchor='middle' "
+        "fill='#a16207' font-family='system-ui,sans-serif' font-size='18'>Demo</text>"
+        "</svg>"
+    )
+)
 
 # Security scheme for Bearer Token
 security_scheme = HTTPBearer(auto_error=False)
@@ -979,291 +991,291 @@ def init_demo_data():
     products = [
         # ===== CANNABIS =====
         {"vendor": "GreenLeaf", "title": "OG Kush Premium 28g", "price": 0.35, "cat": "Cannabis", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1603909223429-69bb7101f420?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Top-shelf OG Kush, dense buds with heavy trichome coverage. Earthy pine aroma. Vacuum sealed, stealth shipping worldwide."},
         {"vendor": "GreenLeaf", "title": "Girl Scout Cookies 14g", "price": 0.2, "cat": "Cannabis", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1536819114556-1e10f967fb61?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "GSC hybrid strain, sweet and earthy flavor profile. Perfect for relaxation. Discreet packaging guaranteed."},
         {"vendor": "GreenLeaf", "title": "Blue Dream Sativa 7g", "price": 0.12, "cat": "Cannabis", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1603386329225-868f9b1ee6c9?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Blue Dream sativa dominant hybrid. Uplifting cerebral high. Great for daytime use. Lab tested 22% THC."},
         {"vendor": "GreenLeaf", "title": "Hash Moroccan Prestige 10g", "price": 0.15, "cat": "Cannabis", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1574169208507-84376144848b?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Authentic Moroccan hash, hand-pressed. Rich and smooth smoke. Imported directly from source."},
 
         # ===== STIMULANTS =====
         {"vendor": "DarkPharmacy", "title": "Cocaine HCl 99% Pure 1g", "price": 0.85, "cat": "Stimulants", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1584308666744-24d5c474f2ae?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Laboratory grade cocaine hydrochloride, 99% purity verified by reagent test. Fishscale quality. Stealth shipping."},
         {"vendor": "DarkPharmacy", "title": "MDMA Crystal 0.5g", "price": 0.32, "cat": "Stimulants", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1587854692152-cbe660dbde88?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Premium MDMA crystals, 85%+ purity. Tested with Marquis reagent. Strong and clean roll. EU origin."},
         {"vendor": "DarkPharmacy", "title": "Speed Paste 5g", "price": 0.18, "cat": "Stimulants", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1559757175-5700dde675bc?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "High quality amphetamine paste, 60%+ purity. Vacuum sealed for freshness. Discreet EU shipping."},
         {"vendor": "CryptoKing", "title": "Meth Crystal 1g", "price": 0.55, "cat": "Stimulants", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1559757148-5c350d0d3c56?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "High purity crystal methamphetamine. Ice quality, clear shards. Tested and verified. Stealth packaging."},
 
         # ===== PSYCHEDELICS =====
         {"vendor": "PsychedelicPro", "title": "LSD Blotter 100ug x10", "price": 0.25, "cat": "Psychedelics", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1518531933037-91b2f5f229cc?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "High quality LSD blotters, 100ug each. Tested with Ehrlich reagent. Artwork printed tabs. 10 tabs per order."},
         {"vendor": "PsychedelicPro", "title": "Magic Mushrooms Cubensis 7g", "price": 0.18, "cat": "Psychedelics", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1518531933037-91b2f5f229cc?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Psilocybe cubensis, dried and vacuum sealed. Golden Teacher strain. Potent and reliable. 7g = 1 oz."},
         {"vendor": "PsychedelicPro", "title": "DMT Freebase 0.5g", "price": 0.45, "cat": "Psychedelics", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1559757175-5700dde675bc?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "N,N-DMT freebase, high purity. White/yellow crystals. Tested with Ehrlich. Breakthrough doses included."},
         {"vendor": "PsychedelicPro", "title": "2C-B 20mg x5 pills", "price": 0.38, "cat": "Psychedelics", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1584308666744-24d5c474f2ae?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "2C-B pressed pills, 20mg each. Tested and verified. Euphoric psychedelic experience. 5 pills per order."},
 
         # ===== OPIOIDS =====
         {"vendor": "SilkMaster", "title": "Heroin #4 White 1g", "price": 0.95, "cat": "Opioids", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1584308666744-24d5c474f2ae?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Afghan heroin #4, white powder, high purity. Tested with Mecke reagent. Stealth international shipping."},
         {"vendor": "SilkMaster", "title": "Oxycodone 80mg x20", "price": 0.72, "cat": "Opioids", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1471864190281-a93a3070b6de?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Oxycodone HCl 80mg tablets. Pharmaceutical grade. 20 pills per order. Discreet packaging."},
         {"vendor": "PharmaDirect", "title": "Fentanyl Patches 50mcg x5", "price": 0.65, "cat": "Opioids", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1559757175-5700dde675bc?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Fentanyl transdermal patches 50mcg/h. Pharmaceutical brand. 5 patches per order. Sealed in original packaging."},
 
         # ===== BENZOS =====
         {"vendor": "PharmaDirect", "title": "Xanax 2mg x100 bars", "price": 0.55, "cat": "Benzos", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1584308666744-24d5c474f2ae?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Alprazolam 2mg bars (Xanax). Pharmaceutical grade. 100 pills per order. Pressed with correct markings."},
         {"vendor": "PharmaDirect", "title": "Diazepam 10mg x50", "price": 0.22, "cat": "Benzos", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1471864190281-a93a3070b6de?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Valium 10mg tablets. Pharmaceutical quality. 50 pills per order. Anxiety and sleep aid."},
         {"vendor": "PharmaDirect", "title": "Clonazepam 2mg x50", "price": 0.28, "cat": "Benzos", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1559757175-5700dde675bc?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Klonopin 2mg tablets. High quality pharmaceutical. 50 pills. Long-acting benzo, smooth effect."},
 
         # ===== PRESCRIPTION =====
         {"vendor": "PharmaDirect", "title": "Adderall XR 30mg x30", "price": 0.42, "cat": "Prescription", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1471864190281-a93a3070b6de?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Adderall XR 30mg capsules. Pharmaceutical grade amphetamine salts. 30 capsules. Focus and productivity."},
         {"vendor": "PharmaDirect", "title": "Modafinil 200mg x30", "price": 0.15, "cat": "Prescription", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1584308666744-24d5c474f2ae?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Modafinil 200mg tablets. Wakefulness agent. 30 tabs. No prescription needed. Worldwide shipping."},
         {"vendor": "DarkPharmacy", "title": "Tramadol 100mg x50", "price": 0.18, "cat": "Prescription", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1559757175-5700dde675bc?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Tramadol HCl 100mg tablets. Pain management. 50 pills per order. Discreet packaging."},
 
         # ===== DISSOCIATIVES =====
         {"vendor": "PsychedelicPro", "title": "Ketamine HCl 1g", "price": 0.65, "cat": "Dissociatives", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1559757148-5c350d0d3c56?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Pharmaceutical grade ketamine HCl. White crystalline powder. Tested for purity. Anesthetic quality."},
         {"vendor": "PsychedelicPro", "title": "PCP 0.5g", "price": 0.48, "cat": "Dissociatives", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1584308666744-24d5c474f2ae?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Phencyclidine 0.5g. High purity. Tested with reagent. Powerful dissociative experience."},
 
         # ===== EMPATHOGENS =====
         {"vendor": "DarkPharmacy", "title": "MDMA Powder 1g", "price": 0.45, "cat": "Empathogens", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1587854692152-cbe660dbde88?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Pure MDMA powder, 85%+ purity. Tested with Marquis reagent. Euphoric and empathogenic effects."},
         {"vendor": "PsychedelicPro", "title": "MDA 100mg x5 caps", "price": 0.35, "cat": "Empathogens", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1559757175-5700dde675bc?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "MDA capsules 100mg each. Tested and verified. More psychedelic than MDMA. 5 caps per order."},
 
         # ===== STEROIDS =====
         {"vendor": "SecureServices", "title": "Testosterone Enanthate 250mg/ml 10ml", "price": 0.25, "cat": "Steroids", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1571019613454-1cb2f99b2d8b?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Pharmaceutical grade Testosterone Enanthate 250mg/ml. 10ml vial. Lab tested. Bodybuilding grade."},
         {"vendor": "SecureServices", "title": "Anavar 50mg x100 tabs", "price": 0.38, "cat": "Steroids", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1584308666744-24d5c474f2ae?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Oxandrolone 50mg tablets. 100 tabs per order. Lean muscle gains, minimal side effects. Lab verified."},
         {"vendor": "SecureServices", "title": "HGH Somatropin 100IU kit", "price": 1.85, "cat": "Steroids", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1559757175-5700dde675bc?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Human Growth Hormone 100IU kit. Pharmaceutical grade. Anti-aging and muscle building. Cold chain shipping."},
 
         # ===== CARDING =====
         {"vendor": "CryptoKing", "title": "CC Fullz USA x10 Fresh", "price": 0.12, "cat": "Carding", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1563013544-824ae1b704d3?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "10x USA credit card fullz. Includes: CC#, CVV, expiry, name, address, SSN, DOB. Fresh and valid. High balance."},
         {"vendor": "CryptoKing", "title": "EU Visa/MC Dumps x5", "price": 0.18, "cat": "Carding", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1556742049-0cfed4f6a45d?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "5x European Visa/Mastercard dumps with PIN. Track 1+2. High balance cards. Germany, France, UK."},
         {"vendor": "CryptoKing", "title": "Skimmer Device Pro", "price": 0.95, "cat": "Carding", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1518770660439-4636190af475?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Professional ATM skimmer device. Bluetooth enabled. Includes pinhole camera. Easy installation guide."},
 
         # ===== BANK ACCOUNTS =====
         {"vendor": "CryptoKing", "title": "Chase Bank Account $15k balance", "price": 0.35, "cat": "Bank Accounts", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1601597111158-2fceff292cdc?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Verified Chase bank account with $15,000+ balance. Full access credentials. Online banking enabled. USA."},
         {"vendor": "CryptoKing", "title": "Wells Fargo Business Account", "price": 0.55, "cat": "Bank Accounts", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1556742049-0cfed4f6a45d?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Wells Fargo business account, $50k+ balance. Full access. Wire transfer enabled. Aged account."},
 
         # ===== PAYPAL / CASHAPP =====
         {"vendor": "DigitalGoods", "title": "PayPal Account $5000 Verified", "price": 0.15, "cat": "PayPal / Cashapp", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1563013544-824ae1b704d3?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Verified PayPal account with $5000 balance. Full access. Email and password included. Instant delivery."},
         {"vendor": "DigitalGoods", "title": "CashApp $2000 Flip", "price": 0.08, "cat": "PayPal / Cashapp", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1556742049-0cfed4f6a45d?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "CashApp account with $2000 balance. Verified identity. Instant transfer available. USA accounts only."},
 
         # ===== IDENTITY DOCS =====
         {"vendor": "SilkMaster", "title": "USA Passport Scan + Template", "price": 0.45, "cat": "Identity Docs", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1544620347-c4fd4a3d5957?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "High quality USA passport scan template. Editable PSD file. Perfect for KYC bypass. Photoshop included."},
         {"vendor": "SilkMaster", "title": "EU Driver License Template", "price": 0.28, "cat": "Identity Docs", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1544620347-c4fd4a3d5957?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "European driver license editable template. Multiple countries available. High resolution PSD. KYC ready."},
         {"vendor": "SilkMaster", "title": "SSN + DOB Fullz x5", "price": 0.22, "cat": "Identity Docs", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1563013544-824ae1b704d3?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "5x USA Social Security Numbers with full identity. Name, DOB, address, SSN. Fresh and valid. Credit check ready."},
 
         # ===== COUNTERFEIT =====
         {"vendor": "SilkMaster", "title": "USD $100 Bills x20 (Prop)", "price": 0.65, "cat": "Counterfeit", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1554672408-730436b60dde?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "High quality prop USD $100 bills. 20 bills = $2000 face value. Passes UV and pen test. Discreet shipping."},
         {"vendor": "SilkMaster", "title": "EUR €50 Bills x30 (Prop)", "price": 0.55, "cat": "Counterfeit", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1554672408-730436b60dde?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Prop Euro bills €50 denomination. 30 bills. High quality print. Watermark and security thread included."},
 
         # ===== ACCOUNTS =====
         {"vendor": "DigitalGoods", "title": "Netflix Premium 4K x1 Year", "price": 0.02, "cat": "Accounts", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1522869635100-9f4c5e86aa37?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Netflix Premium 4K UHD account. 1 year subscription. 4 screens simultaneously. Instant delivery."},
         {"vendor": "DigitalGoods", "title": "Spotify Premium Lifetime", "price": 0.015, "cat": "Accounts", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1614680376593-902f74cf0d41?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Spotify Premium lifetime account. No ads, offline mode, unlimited skips. Instant delivery."},
         {"vendor": "DigitalGoods", "title": "OnlyFans Creator Account Verified", "price": 0.08, "cat": "Accounts", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1611162617213-7d7a39e9b1d7?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Verified OnlyFans creator account. ID verified, payout enabled. Ready to monetize. Full access."},
         {"vendor": "DigitalGoods", "title": "Amazon Prime + AWS Credits $500", "price": 0.12, "cat": "Accounts", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1523474253046-8cd2748b5fd2?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Amazon Prime account with $500 AWS credits. Full access. Prime Video, Music, Delivery included."},
 
         # ===== MALWARE / RATS =====
         {"vendor": "CryptoKing", "title": "AsyncRAT Builder + Crypter", "price": 0.35, "cat": "Malware / RATs", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1550751827-4bd374c3f58b?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "AsyncRAT with custom crypter. FUD (Fully Undetectable). Remote access, keylogger, screenshot. Full source code."},
         {"vendor": "CryptoKing", "title": "Ransomware Kit LockBit Style", "price": 1.25, "cat": "Malware / RATs", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1518770660439-4636190af475?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Custom ransomware kit. AES-256 encryption. Decryptor included. C2 panel. Affiliate program available."},
         {"vendor": "CryptoKing", "title": "Stealer Log x1000 Fresh", "price": 0.18, "cat": "Malware / RATs", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1563013544-824ae1b704d3?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "1000 fresh stealer logs. Includes: passwords, cookies, crypto wallets, CC data. Sorted by country."},
 
         # ===== EXPLOITS / 0DAY =====
         {"vendor": "SecureServices", "title": "Windows 11 LPE 0day", "price": 2.5, "cat": "Exploits / 0day", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1518770660439-4636190af475?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Local Privilege Escalation 0day for Windows 11. Unpatched. Full PoC code included. Escrow only."},
         {"vendor": "SecureServices", "title": "WordPress RCE Plugin Exploit", "price": 0.45, "cat": "Exploits / 0day", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1550751827-4bd374c3f58b?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Remote Code Execution exploit for popular WordPress plugin. Affects 500k+ sites. Full exploit code + tutorial."},
 
         # ===== EBOOKS / GUIDES =====
         {"vendor": "DigitalGoods", "title": "Carding Bible 2026 Edition", "price": 0.008, "cat": "eBooks / Guides", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1481627834876-b7833e8f5570?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Complete carding guide 2026. 300+ pages. CC fraud, cashout methods, money laundering. Updated monthly."},
         {"vendor": "DigitalGoods", "title": "OSINT Masterclass PDF", "price": 0.005, "cat": "eBooks / Guides", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1481627834876-b7833e8f5570?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Open Source Intelligence complete guide. Doxing, tracking, social engineering. 200+ pages with tools."},
         {"vendor": "DigitalGoods", "title": "Darknet Vendor Setup Guide", "price": 0.012, "cat": "eBooks / Guides", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1481627834876-b7833e8f5570?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Complete guide to becoming a darknet vendor. Stealth shipping, PGP, Monero, opsec. 150 pages."},
 
         # ===== SOFTWARE / KEYS =====
         {"vendor": "DigitalGoods", "title": "Windows 11 Pro OEM Key", "price": 0.008, "cat": "Software / Keys", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1518770660439-4636190af475?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Genuine Windows 11 Pro OEM license key. Instant delivery. Lifetime activation. 1 PC."},
         {"vendor": "DigitalGoods", "title": "Adobe CC 2026 All Apps Crack", "price": 0.005, "cat": "Software / Keys", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1611162617213-7d7a39e9b1d7?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Adobe Creative Cloud 2026 full crack. All apps included. Photoshop, Premiere, After Effects. No subscription."},
         {"vendor": "DigitalGoods", "title": "Office 365 Business Key x5", "price": 0.015, "cat": "Software / Keys", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1523474253046-8cd2748b5fd2?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Microsoft Office 365 Business keys. 5 licenses. 1TB OneDrive each. Teams, Word, Excel, Outlook."},
 
         # ===== HACKING =====
         {"vendor": "SecureServices", "title": "Instagram Account Hack Service", "price": 0.12, "cat": "Hacking", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1611162617213-7d7a39e9b1d7?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Professional Instagram account takeover service. Any account. 24-48h delivery. Escrow protected."},
         {"vendor": "SecureServices", "title": "Email Account Recovery/Hack", "price": 0.08, "cat": "Hacking", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1563013544-824ae1b704d3?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Gmail, Outlook, Yahoo account recovery. Any email provider. 12-24h. Full access delivered securely."},
         {"vendor": "SecureServices", "title": "Phone Number Spoof Service", "price": 0.05, "cat": "Hacking", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1518770660439-4636190af475?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Caller ID spoofing service. Call from any number. 100 calls included. Worldwide. Instant setup."},
 
         # ===== DDOS =====
         {"vendor": "SecureServices", "title": "DDoS Attack 100Gbps 1 Hour", "price": 0.15, "cat": "DDoS", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1550751827-4bd374c3f58b?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Layer 4/7 DDoS attack service. 100Gbps power. 1 hour duration. Any target. Bypass Cloudflare."},
         {"vendor": "SecureServices", "title": "Stresser Panel 30 Days Access", "price": 0.22, "cat": "DDoS", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1518770660439-4636190af475?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Premium stresser/booter panel. 30 days access. Unlimited attacks. 500Gbps capacity. API access included."},
 
         # ===== MONEY LAUNDERING =====
         {"vendor": "CryptoKing", "title": "BTC Tumbling Service 1 BTC", "price": 0.025, "cat": "Money Laundering", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1639762681485-074b7f938ba0?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Bitcoin tumbling/mixing service. 1 BTC capacity. 3 output addresses. 0.5% fee. No logs policy."},
         {"vendor": "CryptoKing", "title": "Cash to Crypto Conversion $10k", "price": 0.08, "cat": "Money Laundering", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1554672408-730436b60dde?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Convert $10,000 cash to clean cryptocurrency. Multiple methods. 5% fee. Escrow protected service."},
 
         # ===== CRYPTO MIXING =====
         {"vendor": "CryptoKing", "title": "XMR Mixer Premium Service", "price": 0.018, "cat": "Crypto Mixing", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1639762681485-074b7f938ba0?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Monero mixing service. Untraceable XMR. Multiple output addresses. Time delay option. Zero logs."},
         {"vendor": "CryptoKing", "title": "ETH Tornado Cash Alternative", "price": 0.022, "cat": "Crypto Mixing", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1639762681485-074b7f938ba0?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Ethereum mixing service. Smart contract based. Fully decentralized. Up to 100 ETH per transaction."},
 
         # ===== ESCROW SERVICE =====
         {"vendor": "SecureServices", "title": "Escrow Service 1-10 XMR", "price": 0.005, "cat": "Escrow Service", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1450101499163-c8848c66ca85?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Third-party escrow service for darknet deals. 1-10 XMR range. 1% fee. Dispute resolution included."},
 
         # ===== FIREARMS =====
         {"vendor": "SilkMaster", "title": "Glock 19 Gen5 9mm", "price": 3.5, "cat": "Firearms", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1595590424283-b8f17842773f?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Glock 19 Gen5 9mm pistol. Serialized, clean. Includes 2 magazines. Ships disassembled in parts."},
         {"vendor": "SilkMaster", "title": "AK-47 Parts Kit", "price": 2.8, "cat": "Firearms", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1595590424283-b8f17842773f?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "AK-47 complete parts kit. All components. Ships in multiple packages. Assembly guide included."},
 
         # ===== AMMUNITION =====
         {"vendor": "SilkMaster", "title": "9mm FMJ 500 rounds", "price": 0.45, "cat": "Ammunition", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1595590424283-b8f17842773f?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "9mm Full Metal Jacket 500 rounds. Factory sealed. Multiple brands available. Discreet shipping."},
         {"vendor": "SilkMaster", "title": ".223 Rem 200 rounds", "price": 0.38, "cat": "Ammunition", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1595590424283-b8f17842773f?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": ".223 Remington 200 rounds. Brass cased. Suitable for AR-15. Factory ammo, sealed boxes."},
 
         # ===== KNIVES / BLADES =====
         {"vendor": "SilkMaster", "title": "Microtech OTF Automatic Knife", "price": 0.35, "cat": "Knives / Blades", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1593642632559-0c6d3fc62b89?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Microtech OTF automatic knife. 3.5\" blade. Aircraft aluminum handle. Restricted in many states."},
         {"vendor": "SilkMaster", "title": "Karambit Trainer + Live Blade Set", "price": 0.18, "cat": "Knives / Blades", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1593642632559-0c6d3fc62b89?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Karambit set: trainer + live blade. Stainless steel. Ring handle. Includes sheath. Worldwide shipping."},
 
         # ===== JEWELRY / LUXURY =====
         {"vendor": "DigitalGoods", "title": "Rolex Submariner Replica AAA+", "price": 0.85, "cat": "Jewelry / Luxury", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "Rolex Submariner 1:1 replica. Swiss movement. Sapphire crystal. Waterproof 100m. Comes with box and papers."},
         {"vendor": "DigitalGoods", "title": "Louis Vuitton Bag Replica Grade A", "price": 0.45, "cat": "Jewelry / Luxury", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1548036328-c9fa89d128fa?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "LV Neverfull MM replica. Grade A quality. Real leather. Correct hardware. Includes dust bag and receipt."},
         {"vendor": "DigitalGoods", "title": "Diamond Ring 2ct Lab Grown", "price": 1.2, "cat": "Jewelry / Luxury", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1515562141207-7a88fb7ce338?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "2 carat lab grown diamond ring. GIA certified. 18k white gold setting. Comes with certificate."},
 
         # ===== ELECTRONICS =====
         {"vendor": "DigitalGoods", "title": "iPhone 16 Pro Unlocked", "price": 2.2, "cat": "Electronics", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1592750475338-74b7b21085ab?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "iPhone 16 Pro 256GB unlocked. All carriers. Sealed box. IMEI clean. Worldwide shipping available."},
         {"vendor": "DigitalGoods", "title": "MacBook Pro M4 16\" Sealed", "price": 5.5, "cat": "Electronics", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1517336714731-489689fd1ca8?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "MacBook Pro M4 16\" 32GB RAM 1TB SSD. Factory sealed. Space Black. Includes load and accessories."},
         {"vendor": "DigitalGoods", "title": "RTX 5090 GPU Sealed", "price": 3.8, "cat": "Electronics", "sales": 0,
-         "img": "https://images.unsplash.com/photo-1591488320449-011701bb6704?w=600&q=80",
+         "img": _DEMO_LISTING_IMG_SVG,
          "desc": "NVIDIA RTX 5090 24GB GDDR7. Factory sealed. ASUS ROG Strix edition. Includes warranty card."},
     ]
 
