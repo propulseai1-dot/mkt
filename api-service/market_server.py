@@ -3933,8 +3933,9 @@ def affiliate_leaderboard_endpoint():
 @app.get("/api/affiliate/overview")
 def affiliate_overview_endpoint(session: dict = Depends(get_current_session)):
     """Authenticated: earnings, attributed volume, referral code, payout history."""
-    uname = session["username"]
-    if uname not in users_db:
+    raw = (session.get("username") or "").strip()
+    uname = _resolve_user_db_key(raw) or raw
+    if not uname or uname not in users_db:
         raise HTTPException(status_code=404, detail="USER_NOT_FOUND")
     st = stats_for_user(uname)
     hist = payments_for_user(uname)

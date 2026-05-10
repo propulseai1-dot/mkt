@@ -4,6 +4,7 @@
  * Amber/dark cyberpunk aesthetic — no style changes
  */
 import React, { useState, useEffect, useCallback } from 'react';
+import { silkApiUrl } from './silkApi';
 
 // ============================================================
 // COMMISSION TIER BADGE
@@ -104,7 +105,7 @@ function AllLevelsTable({ levels, currentLevel }) {
 // ============================================================
 // WITHDRAW PANEL
 // ============================================================
-function WithdrawPanel({ username, internalBalance, onWithdrawSuccess }) {
+function WithdrawPanel({ username, internalBalance, onWithdrawSuccess, authenticatedFetch }) {
   const [address, setAddress] = useState('');
   const [amount, setAmount] = useState('');
   const [loading, setLoading] = useState(false);
@@ -124,7 +125,8 @@ function WithdrawPanel({ username, internalBalance, onWithdrawSuccess }) {
     setError('');
     setResult(null);
     try {
-      const resp = await fetch('/api/v1/vendor/withdraw', {
+      const doFetch = authenticatedFetch || (async (url, opts) => fetch(silkApiUrl(url), opts));
+      const resp = await doFetch('/api/v1/vendor/withdraw', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, address, amount: amountNum })
@@ -387,25 +389,30 @@ function WithdrawPanel({ username, internalBalance, onWithdrawSuccess }) {
 // ============================================================
 // MAIN VENDOR DASHBOARD COMPONENT
 // ============================================================
-export default function VendorDashboard({ username }) {
+export default function VendorDashboard({ username, authenticatedFetch }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [internalBalance, setInternalBalance] = useState(0);
 
   const loadDashboard = useCallback(async () => {
+    if (!username) return;
     try {
-      const resp = await fetch(`/api/vendor/${username}/dashboard`);
+      const doFetch = authenticatedFetch || (async (url) => fetch(silkApiUrl(url)));
+      const resp = await doFetch(`/api/vendor/${encodeURIComponent(username)}/dashboard`);
       if (resp.ok) {
         const d = await resp.json();
         setData(d);
         setInternalBalance(d.internal_balance || 0);
+      } else {
+        setData(null);
       }
     } catch (e) {
       console.error('Dashboard load error:', e);
+      setData(null);
     } finally {
       setLoading(false);
     }
-  }, [username]);
+  }, [username, authenticatedFetch]);
 
   useEffect(() => {
     if (username) loadDashboard();
@@ -501,6 +508,7 @@ export default function VendorDashboard({ username }) {
       <WithdrawPanel
         username={username}
         internalBalance={internalBalance}
+        authenticatedFetch={authenticatedFetch}
         onWithdrawSuccess={(newBal) => {
           setInternalBalance(newBal);
           loadDashboard();

@@ -24,13 +24,14 @@ function StatCard({ icon: Icon, label, value, sub, accent = 'amber' }) {
   );
 }
 
-export default function AffiliateProgramPage({ user, authenticatedFetch }) {
+export default function AffiliateProgramPage({ user, sessionToken, authenticatedFetch }) {
   const [program, setProgram] = useState(null);
   const [leaderboard, setLeaderboard] = useState([]);
   const [lbMonth, setLbMonth] = useState('');
   const [overview, setOverview] = useState(null);
   const [copied, setCopied] = useState(false);
   const [loadErr, setLoadErr] = useState(null);
+  const [privateErr, setPrivateErr] = useState(null);
 
   const loadPublic = useCallback(async () => {
     try {
@@ -50,12 +51,23 @@ export default function AffiliateProgramPage({ user, authenticatedFetch }) {
 
   const loadPrivate = useCallback(async () => {
     if (!authenticatedFetch || !user?.username) return;
+    setPrivateErr(null);
     try {
       const r = await authenticatedFetch('/api/affiliate/overview');
-      const d = await r.json();
-      if (r.ok) setOverview(d);
+      const d = await r.json().catch(() => ({}));
+      if (r.ok) {
+        setOverview(d);
+        return;
+      }
+      if (r.status === 401) {
+        setPrivateErr('Session expired — reload and sign in again to see your referral link.');
+      } else if (r.status === 404) {
+        setPrivateErr('Account not found on server — try logging out and back in.');
+      } else {
+        setPrivateErr(d?.detail ? String(d.detail) : `Could not load affiliate overview (${r.status}).`);
+      }
     } catch {
-      /* ignore */
+      setPrivateErr('Network error loading affiliate data.');
     }
   }, [authenticatedFetch, user?.username]);
 
@@ -63,9 +75,10 @@ export default function AffiliateProgramPage({ user, authenticatedFetch }) {
     loadPublic();
   }, [loadPublic]);
 
+  /** Reload private overview when session token is available (fixes race after page load / hash navigation). */
   useEffect(() => {
     loadPrivate();
-  }, [loadPrivate]);
+  }, [loadPrivate, sessionToken]);
 
   const referralUrl =
     typeof window !== 'undefined' && overview?.referral_code
@@ -175,9 +188,12 @@ export default function AffiliateProgramPage({ user, authenticatedFetch }) {
         <p className="text-[11px] text-gray-500 mb-4 normal-case not-italic">
           New users should open this URL before registering so the relationship is recorded.
         </p>
+        {privateErr && (
+          <div className="rounded-lg border border-amber-900/40 bg-amber-950/20 px-3 py-2 text-[11px] text-amber-400 mb-3">{privateErr}</div>
+        )}
         <div className="flex flex-col sm:flex-row gap-3">
           <div className="flex-1 rounded-xl border border-white/10 bg-black/50 px-4 py-3 text-[11px] text-amber-500/90 font-mono break-all">
-            {referralUrl || 'Sign in to generate your link.'}
+            {referralUrl || (user?.username ? 'Loading your referral link…' : 'Sign in to generate your link.')}
           </div>
           <button
             type="button"

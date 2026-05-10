@@ -5522,7 +5522,7 @@ function App() {
           )}
 
           {activeTab === 'affiliation' && user && (
-            <AffiliateProgramPage user={user} authenticatedFetch={authenticatedFetch} />
+            <AffiliateProgramPage user={user} sessionToken={sessionToken} authenticatedFetch={authenticatedFetch} />
           )}
 
           {/* CANARY PAGE */}
@@ -5935,7 +5935,7 @@ function App() {
 
           {/* VENDOR DASHBOARD - EARNINGS & COMMISSIONS */}
           {activeTab === 'vendor_dashboard' && user?.role === 'vendor' && (
-            <VendorDashboard username={user.username} />
+            <VendorDashboard username={user.username} authenticatedFetch={authenticatedFetch} />
           )}
 
           {/* VENDOR PANEL */}
