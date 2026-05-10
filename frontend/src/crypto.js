@@ -1,98 +1,40 @@
 ﻿/**
- * SILKGENESIS - AES-256 ENCRYPTION
- * Chiffrement side client pour les messages
+ * SILKGENESIS - crypto.js
+ *
+ * NOTE DE SECURITE
+ * ----------------
+ * L'ancienne implementation de ce fichier utilisait une cle AES *codee en dur*
+ * dans le bundle JS (et donc identique pour tous les utilisateurs). Ce n'etait
+ * pas du chiffrement de bout en bout, juste de l'obfuscation. Toute personne
+ * recevant le bundle pouvait dechiffrer n'importe quel message.
+ *
+ * Cette implementation a ete RETIREE.
+ *
+ * Le chiffrement des messages doit etre fait via PGP, en utilisant la cle
+ * publique PGP du destinataire. Pour le moment, l'API serveur expose
+ * /api/pgp/encrypt qui chiffre cote serveur (le serveur voit donc le plaintext)
+ * — c'est documente comme limitation et la migration vers openpgp.js cote
+ * navigateur est planifiee (voir audit, finding f28 / P2).
+ *
+ * Les fonctions ci-dessous levent volontairement une erreur pour casser
+ * proprement tout code legacy qui les utiliserait par accident, plutot que
+ * de continuer en silence avec un faux chiffrement.
  */
 
-// Deriver une cle de encryption depuis un password
-async function deriveKey(password, salt) {
-  const encoder = new TextEncoder();
-  const keyMaterial = await window.crypto.subtle.importKey(
-    'raw',
-    encoder.encode(password),
-    'PBKDF2',
-    false,
-    ['deriveBits', 'deriveKey']
-  );
+const REMOVED =
+  'crypto.js: removed (was fake AES with a hardcoded global key). ' +
+  'Use PGP encryption via the server API or migrate to openpgp.js client-side.';
 
-  return window.crypto.subtle.deriveKey(
-    {
-      name: 'PBKDF2',
-      salt: encoder.encode(salt),
-      iterations: 100000,
-      hash: 'SHA-256'
-    },
-    keyMaterial,
-    { name: 'AES-GCM', length: 256 },
-    false,
-    ['encrypt', 'decrypt']
-  );
+export async function encryptMessage(/* message, password */) {
+  throw new Error(REMOVED);
 }
 
-// Chiffrer un message (SIMPLIFIE - cle fixe pour que tout le monde puisse dechiffrer)
-export async function encryptMessage(message, password) {
-  try {
-    const encoder = new TextEncoder();
-    // Utiliser une cle globale fixe pour que tous les users puissent dechiffrer
-    const globalKey = 'silkgenesis_global_chat_key_v1';
-    const salt = 'silkgenesis_salt_v1';
-    const key = await deriveKey(globalKey, salt);
-    
-    // Generate un IV aleatoire
-    const iv = window.crypto.getRandomValues(new Uint8Array(12));
-    
-    // Chiffrer
-    const encrypted = await window.crypto.subtle.encrypt(
-      { name: 'AES-GCM', iv },
-      key,
-      encoder.encode(message)
-    );
-    
-    // Combiner IV + data encryptedes
-    const combined = new Uint8Array(iv.length + encrypted.byteLength);
-    combined.set(iv, 0);
-    combined.set(new Uint8Array(encrypted), iv.length);
-    
-    // Convertir en base64
-    return btoa(String.fromCharCode(...combined));
-  } catch (e) {
-    console.error('Encryption error:', e);
-    return message; // Returnsr le message in plain text on error
-  }
+export async function decryptMessage(/* encryptedBase64, password */) {
+  throw new Error(REMOVED);
 }
 
-// Decrypt un message
-export async function decryptMessage(encryptedBase64, password) {
-  try {
-    // Utiliser la meme cle globale
-    const globalKey = 'silkgenesis_global_chat_key_v1';
-    const salt = 'silkgenesis_salt_v1';
-    const key = await deriveKey(globalKey, salt);
-    
-    // Decoder base64
-    const combined = Uint8Array.from(atob(encryptedBase64), c => c.charCodeAt(0));
-    
-    // Extraire IV et data
-    const iv = combined.slice(0, 12);
-    const encrypted = combined.slice(12);
-    
-    // Decrypt
-    const decrypted = await window.crypto.subtle.decrypt(
-      { name: 'AES-GCM', iv },
-      key,
-      encrypted
-    );
-    
-    const decoder = new TextDecoder();
-    return decoder.decode(decrypted);
-  } catch (e) {
-    console.error('Decryption error:', e);
-    return encryptedBase64; // Returnsr le message as-is if decryption fails
-  }
-}
-
-// Generate une cle de chat unique pour buyer-vendor
 export function getChatKey(buyer, vendor) {
+  // Conserve uniquement comme helper pour identifier une conversation buyer-vendor.
+  // Aucun secret cryptographique ici.
   return `${buyer}_${vendor}`;
 }
-
-

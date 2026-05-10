@@ -14,8 +14,29 @@ set MONERO_DIR=%~dp0monero-cli
 set WALLETS_DIR=%~dp0api-service\multisig_wallets
 if not defined MONERO_DAEMON set "MONERO_DAEMON=127.0.0.1:38080"
 set "DAEMON=%MONERO_DAEMON%"
-if not defined RPC_USER set "RPC_USER=silkgenesis"
-if not defined RPC_PASS set "RPC_PASS=silkgenesis_rpc_2026"
+
+REM Charger les secrets locaux (jamais versionnes)
+if exist "%~dp0local_secrets.bat" call "%~dp0local_secrets.bat"
+
+if not defined RPC_USER (
+    echo [ERREUR] RPC_USER non defini.
+    echo   Creez %~dp0local_secrets.bat avec:
+    echo     set "RPC_USER=..."
+    echo     set "RPC_PASS=..."
+    exit /b 1
+)
+if not defined RPC_PASS (
+    echo [ERREUR] RPC_PASS non defini ^(voir local_secrets.bat^).
+    exit /b 1
+)
+
+REM Mot de passe wallet multisig (jamais vide). Genere par operateur.
+if not defined MS_WALLET_PASS (
+    echo [ERREUR] MS_WALLET_PASS non defini.
+    echo   Definissez un passphrase fort dans local_secrets.bat:
+    echo     set "MS_WALLET_PASS=..."
+    exit /b 1
+)
 
 :: Creer le dossier wallets si necessaire
 if not exist "%WALLETS_DIR%" mkdir "%WALLETS_DIR%"
@@ -59,7 +80,7 @@ if exist "%WALLETS_DIR%\marketplace.keys" (
         --rpc-login %RPC_USER%:%RPC_PASS% ^
         --daemon-address %DAEMON% ^
         --trusted-daemon ^
-        --password "" ^
+        --password "%MS_WALLET_PASS%" ^
         --log-level 1 ^
         --log-file "%WALLETS_DIR%\marketplace_rpc.log"
 )

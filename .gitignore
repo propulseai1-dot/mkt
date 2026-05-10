@@ -42,6 +42,11 @@ api-service/vendor_listings.json
 # Credentials admin (généré par generate_admin_password.ps1)
 ADMIN_CREDENTIALS.txt
 
+# Secrets locaux (RPC_USER/RPC_PASS, MS_WALLET_PASS, HMAC, PEPPER) - JAMAIS commiter
+local_secrets.bat
+local_secrets.sh
+local_secrets.env
+
 # Logs financiers (transactions internes)
 api-service/logs/
 logs/

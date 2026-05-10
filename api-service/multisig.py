@@ -1,8 +1,8 @@
-"""
+﻿"""
 SILKGENESIS - VRAIE MULTISIG MONERO 2/3
 =========================================
 Architecture avec 3 instances wallet-rpc separees.
-Protocole complet: prepare → make → exchange → fund → sign → submit
+Protocole complet: prepare â†’ make â†’ exchange â†’ fund â†’ sign â†’ submit
 
 PREREQUIS:
   - monero-wallet-rpc.exe disponible dans monero-cli/
@@ -28,6 +28,8 @@ from requests.auth import HTTPDigestAuth
 from datetime import datetime, timezone
 from pathlib import Path
 
+from secure_storage import open_secure_connection
+
 # ============================================================
 # CONFIGURATION
 # ============================================================
@@ -35,13 +37,27 @@ BASE_DIR = Path(__file__).parent.absolute()
 MONERO_CLI_DIR = BASE_DIR.parent / "monero-cli"
 WALLETS_DIR = BASE_DIR / "multisig_wallets"
 DB_PATH = BASE_DIR / "multisig.db"
-HMAC_SECRET = os.environ.get('MULTISIG_HMAC_SECRET', 'CHANGE_THIS_IN_PRODUCTION_silkgenesis_2026')
+
+# HMAC secret du journal d'audit multisig. JAMAIS de valeur par defaut connue:
+# en production on refuse de demarrer, en dev on genere une valeur ephemere
+# (les anciennes signatures HMAC deviennent invalides apres restart, c'est volontaire).
+_IS_PRODUCTION = os.environ.get('SILKGENESIS_ENV', 'development').lower() == 'production'
+_env_hmac = (os.environ.get('MULTISIG_HMAC_SECRET') or '').strip()
+if _IS_PRODUCTION:
+    if not _env_hmac or len(_env_hmac) < 32:
+        raise RuntimeError(
+            'MULTISIG_HMAC_SECRET is required in production (>= 32 chars). '
+            'Generate with: openssl rand -hex 32'
+        )
+    HMAC_SECRET = _env_hmac
+else:
+    HMAC_SECRET = _env_hmac or secrets.token_hex(32)
 
 # Reseau: 'mainnet' ou 'stagenet'
 NETWORK = os.environ.get('MONERO_NETWORK', 'stagenet')
 STAGENET_FLAG = '--stagenet' if NETWORK == 'stagenet' else ''
 
-# Daemon (stagenet: P2P par defaut 127.0.0.1:38080 — monerod sans option)
+# Daemon (stagenet: P2P par defaut 127.0.0.1:38080 â€” monerod sans option)
 _stagenet_default = "127.0.0.1:38080"
 DAEMON_HOST = os.environ.get(
     "MONERO_DAEMON",
@@ -53,9 +69,32 @@ PORT_MARKETPLACE = int(os.environ.get("RPC_PORT_MARKETPLACE", 18082))
 PORT_BUYER_BASE  = int(os.environ.get("RPC_PORT_BUYER_BASE",  18083))
 PORT_VENDOR_BASE = int(os.environ.get("RPC_PORT_VENDOR_BASE", 18084))
 
-# Credentials RPC (aligne SET_SILKGENESIS_STAGENET_ENV.bat : pas de token aleatoire au redemarrage)
-RPC_USER = os.environ.get("RPC_USER", "silkgenesis")
-RPC_PASS = os.environ.get("RPC_PASS", "silkgenesis_rpc_2026")
+# Credentials RPC : jamais de defaut hardcode en production.
+RPC_USER = (os.environ.get("RPC_USER") or "").strip()
+RPC_PASS = (os.environ.get("RPC_PASS") or "").strip()
+if _IS_PRODUCTION and (not RPC_USER or not RPC_PASS):
+    raise RuntimeError(
+        "RPC_USER and RPC_PASS are required in production for the multisig wallet-rpc."
+    )
+if not RPC_USER or not RPC_PASS:
+    # En dev, on garde un fonctionnement local mais avec des valeurs aleatoires
+    # (l'operateur DOIT lancer wallet-rpc avec --rpc-login matching cette valeur ;
+    # voir SET_SILKGENESIS_STAGENET_ENV.bat / local_secrets.bat).
+    RPC_USER = RPC_USER or "silkgenesis_dev"
+    RPC_PASS = RPC_PASS or secrets.token_urlsafe(24)
+
+# Mot de passe des wallets multisig. JAMAIS vide. Doit etre defini par l'operateur
+# (variable d'environnement) et stocke dans un secret manager.
+MS_WALLET_PASS = (os.environ.get("MS_WALLET_PASS") or "").strip()
+if _IS_PRODUCTION and (not MS_WALLET_PASS or len(MS_WALLET_PASS) < 24):
+    raise RuntimeError(
+        "MS_WALLET_PASS is required in production (>= 24 chars). "
+        "Generate with: openssl rand -hex 32"
+    )
+if not MS_WALLET_PASS:
+    # Dev seulement : un mot de passe ephemere. Les wallets crees ne pourront
+    # plus etre rouverts apres redemarrage (volontaire, force a regenerer).
+    MS_WALLET_PASS = secrets.token_urlsafe(32)
 
 WALLETS_DIR.mkdir(exist_ok=True)
 
@@ -72,7 +111,7 @@ def _now() -> str:
 # SQLITE - SCHEMA
 # ============================================================
 def _init_db():
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = open_secure_connection(str(DB_PATH))
     c = conn.cursor()
     c.executescript('''
         CREATE TABLE IF NOT EXISTS multisig_wallets (
@@ -150,7 +189,7 @@ def _audit(order_id: str, event: str, actor: str, details: dict):
     d = json.dumps(details, default=str)
     msg = f"{order_id}:{event}:{actor}:{ts}:{d}"
     sig = hmac_lib.new(HMAC_SECRET.encode(), msg.encode(), hashlib.sha256).hexdigest()
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = open_secure_connection(str(DB_PATH))
     try:
         conn.execute(
             "INSERT INTO multisig_audit_log (order_id,event_type,actor,details,timestamp,entry_hmac) VALUES(?,?,?,?,?,?)",
@@ -232,7 +271,7 @@ def _create_wallet(wallet_name: str, port: int) -> bool:
             f'--rpc-bind-port', str(port),
             f'--rpc-login', f'{RPC_USER}:{RPC_PASS}',
             f'--daemon-address', DAEMON_HOST,
-            f'--password', '',
+            f'--password', MS_WALLET_PASS,
             f'--log-level', '0',
         ]
         if STAGENET_FLAG:
@@ -337,19 +376,19 @@ def _step2_make_all(order_id: str, buyer_port: int, vendor_port: int,
     r_mp = _rpc_call(PORT_MARKETPLACE, "make_multisig", {
         "multisig_info": [b_info, v_info],
         "threshold": 2,
-        "password": ""
+        "password": MS_WALLET_PASS
     })
     # buyer.make_multisig([marketplace_info, vendor_info])
     r_b = _rpc_call(buyer_port, "make_multisig", {
         "multisig_info": [mp_info, v_info],
         "threshold": 2,
-        "password": ""
+        "password": MS_WALLET_PASS
     })
     # vendor.make_multisig([marketplace_info, buyer_info])
     r_v = _rpc_call(vendor_port, "make_multisig", {
         "multisig_info": [mp_info, b_info],
         "threshold": 2,
-        "password": ""
+        "password": MS_WALLET_PASS
     })
     
     addr_mp = r_mp.get("result", {}).get("address", "")
@@ -398,15 +437,15 @@ def _step3_exchange_keys(order_id: str, buyer_port: int, vendor_port: int,
     
     r_mp = _rpc_call(PORT_MARKETPLACE, "exchange_multisig_keys", {
         "multisig_info": [b_make_info, v_make_info],
-        "password": ""
+        "password": MS_WALLET_PASS
     })
     r_b = _rpc_call(buyer_port, "exchange_multisig_keys", {
         "multisig_info": [mp_make_info, v_make_info],
-        "password": ""
+        "password": MS_WALLET_PASS
     })
     r_v = _rpc_call(vendor_port, "exchange_multisig_keys", {
         "multisig_info": [mp_make_info, b_make_info],
-        "password": ""
+        "password": MS_WALLET_PASS
     })
     
     addr_mp = r_mp.get("result", {}).get("address", "")
@@ -452,8 +491,8 @@ def _step4_create_tx(order_id: str, buyer_port: int, vendor_address: str, amount
 def _step5_sign_and_submit(order_id: str, tx_data_hex: str) -> dict:
     """
     ETAPE 5: Le marketplace signe et soumet la transaction
-    sign_multisig(tx_data_hex) → signed_hex
-    submit_multisig(signed_hex) → tx_hash
+    sign_multisig(tx_data_hex) â†’ signed_hex
+    submit_multisig(signed_hex) â†’ tx_hash
     """
     print(f"[MULTISIG:{order_id}] Step 5: Marketplace signs and submits TX")
     
@@ -489,12 +528,12 @@ def create_multisig_wallet(order_id: str, buyer: str, vendor: str, amount_xmr: f
     1. Creer 2 nouveaux wallets (buyer_{order_id}, vendor_{order_id})
     2. Demarrer 3 instances wallet-rpc
     3. prepare_multisig() sur les 3
-    4. make_multisig() sur les 3 → address multisig identique
+    4. make_multisig() sur les 3 â†’ address multisig identique
     5. exchange_multisig_keys() si necessaire
     """
     with _lock:
         # Verifier si deja cree
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = open_secure_connection(str(DB_PATH))
         conn.row_factory = sqlite3.Row
         try:
             row = conn.execute("SELECT * FROM multisig_wallets WHERE order_id=?", (order_id,)).fetchone()
@@ -572,7 +611,7 @@ def create_multisig_wallet(order_id: str, buyer: str, vendor: str, amount_xmr: f
             print(f"[MULTISIG:{order_id}] WARNING: Using SIMULATED address - NOT real XMR!")
 
         # Save en DB
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = open_secure_connection(str(DB_PATH))
         try:
             conn.execute('''INSERT OR REPLACE INTO multisig_wallets (
                 order_id, buyer, vendor, amount_xmr, multisig_address, status, rpc_mode,
@@ -612,8 +651,8 @@ def sign_multisig(order_id: str, signer: str, role: str, tx_data_hex: str = None
     tx_data_hex: fourni par le buyer lors de sa signature (cree la tx non-signee)
     
     Flux reel:
-    1. Buyer signe → cree la tx non-signee (tx_data_hex)
-    2. Marketplace signe → sign_multisig(tx_data_hex) + submit_multisig()
+    1. Buyer signe â†’ cree la tx non-signee (tx_data_hex)
+    2. Marketplace signe â†’ sign_multisig(tx_data_hex) + submit_multisig()
     """
     with _lock:
         wallet = _load_wallet(order_id)
@@ -631,7 +670,7 @@ def sign_multisig(order_id: str, signer: str, role: str, tx_data_hex: str = None
             return {"success": False, "error": f"Signer '{signer}' != expected '{expected[role]}'"}
 
         # Verifier si deja signe
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = open_secure_connection(str(DB_PATH))
         conn.row_factory = sqlite3.Row
         try:
             existing = conn.execute(
@@ -644,9 +683,9 @@ def sign_multisig(order_id: str, signer: str, role: str, tx_data_hex: str = None
         if existing:
             return {"success": False, "error": f"{role} already signed"}
 
-        # Si le buyer fournit un tx_data_hex → le stocker
+        # Si le buyer fournit un tx_data_hex â†’ le stocker
         if role == "buyer" and tx_data_hex:
-            conn = sqlite3.connect(str(DB_PATH))
+            conn = open_secure_connection(str(DB_PATH))
             try:
                 conn.execute(
                     "UPDATE multisig_wallets SET partial_tx_hex=?, partial_tx_submitter=? WHERE order_id=?",
@@ -665,7 +704,7 @@ def sign_multisig(order_id: str, signer: str, role: str, tx_data_hex: str = None
         msg = f"{order_id}:{signer}:{role}:{sig_hash}:{signed_at}"
         entry_hmac = hmac_lib.new(HMAC_SECRET.encode(), msg.encode(), hashlib.sha256).hexdigest()
 
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = open_secure_connection(str(DB_PATH))
         try:
             conn.execute(
                 "INSERT INTO multisig_signatures (order_id,signer,role,sig_hash,signed_at,entry_hmac) VALUES(?,?,?,?,?,?)",
@@ -680,7 +719,7 @@ def sign_multisig(order_id: str, signer: str, role: str, tx_data_hex: str = None
         _audit(order_id, "SIGNATURE_ADDED", signer, {"role": role, "sig": sig_hash[:16]})
 
         # Compter les signatures
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = open_secure_connection(str(DB_PATH))
         conn.row_factory = sqlite3.Row
         try:
             sigs = conn.execute(
@@ -725,7 +764,7 @@ def _release_funds(order_id: str) -> dict:
         else:
             rpc_error = step5.get("error", "Unknown RPC error")
     elif wallet.get("rpc_mode") == "live" and not wallet.get("partial_tx_hex"):
-        # Mode live mais pas de tx_data_hex → le buyer doit d'abord creer la tx
+        # Mode live mais pas de tx_data_hex â†’ le buyer doit d'abord creer la tx
         rpc_error = "Waiting for buyer to submit tx_data_hex via sign endpoint"
     else:
         rpc_error = "RPC offline - simulated mode"
@@ -736,7 +775,7 @@ def _release_funds(order_id: str) -> dict:
         if rpc_error:
             print(f"[MULTISIG:{order_id}] Reason: {rpc_error}")
 
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = open_secure_connection(str(DB_PATH))
     try:
         conn.execute(
             "UPDATE multisig_wallets SET status='completed', release_tx=?, released_at=? WHERE order_id=?",
@@ -767,7 +806,7 @@ def _release_funds(order_id: str) -> dict:
 
 
 def open_dispute(order_id: str, opener: str, reason: str) -> dict:
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = open_secure_connection(str(DB_PATH))
     try:
         conn.execute(
             "UPDATE multisig_wallets SET dispute=1, dispute_reason=?, dispute_opened_by=?, dispute_opened_at=?, status='dispute' WHERE order_id=?",
@@ -794,7 +833,7 @@ def resolve_dispute(order_id: str, admin: str, winner: str) -> dict:
         sig = hashlib.sha256(f"{order_id}:{signer}:{role}:{time.time()}".encode()).hexdigest()
         msg = f"{order_id}:{signer}:{role}:{sig}:{now}"
         entry_hmac = hmac_lib.new(HMAC_SECRET.encode(), msg.encode(), hashlib.sha256).hexdigest()
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = open_secure_connection(str(DB_PATH))
         try:
             conn.execute(
                 "INSERT OR IGNORE INTO multisig_signatures (order_id,signer,role,sig_hash,signed_at,entry_hmac) VALUES(?,?,?,?,?,?)",
@@ -814,7 +853,7 @@ def resolve_dispute(order_id: str, admin: str, winner: str) -> dict:
         release = _release_funds(order_id)
     else:
         tx_hash = f"SIMULATED_REFUND_{secrets.token_hex(32)}"
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = open_secure_connection(str(DB_PATH))
         try:
             conn.execute(
                 "UPDATE multisig_wallets SET status='refunded', refund_tx=?, refunded_at=? WHERE order_id=?",
@@ -830,7 +869,7 @@ def resolve_dispute(order_id: str, admin: str, winner: str) -> dict:
 
 
 def _load_wallet(order_id: str) -> dict:
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = open_secure_connection(str(DB_PATH))
     conn.row_factory = sqlite3.Row
     try:
         row = conn.execute("SELECT * FROM multisig_wallets WHERE order_id=?", (order_id,)).fetchone()
@@ -858,7 +897,7 @@ def get_multisig_wallet(order_id: str) -> dict:
 
 
 def get_all_multisig() -> list:
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = open_secure_connection(str(DB_PATH))
     conn.row_factory = sqlite3.Row
     try:
         rows = conn.execute("SELECT * FROM multisig_wallets ORDER BY created_at DESC").fetchall()
@@ -868,7 +907,7 @@ def get_all_multisig() -> list:
 
 
 def get_multisig_status_summary() -> dict:
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = open_secure_connection(str(DB_PATH))
     try:
         rows = conn.execute("SELECT status, amount_xmr FROM multisig_wallets").fetchall()
         wallets = [{"status": r[0], "amount_xmr": r[1]} for r in rows]
@@ -889,7 +928,7 @@ def get_multisig_status_summary() -> dict:
 
 
 def get_audit_log(order_id: str = None, limit: int = 100) -> list:
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = open_secure_connection(str(DB_PATH))
     conn.row_factory = sqlite3.Row
     try:
         if order_id:
@@ -972,3 +1011,4 @@ if __name__ == "__main__":
     s = get_multisig_status_summary()
     print(f"\n[SUMMARY] {s['total']} wallets | {s['completed']} completed")
     print("=" * 60)
+

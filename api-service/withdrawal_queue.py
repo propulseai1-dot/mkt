@@ -1,4 +1,4 @@
-"""
+﻿"""
 SILKGENESIS - Withdrawal & Liquidity Management System
 =======================================================
 Architecture inspiree des grandes plateformes (Binance, Bybit, Kraken).
@@ -24,11 +24,18 @@ from enum import Enum
 
 import os
 from db_persist import get_db_path
+from secure_storage import open_secure_connection
+
 _lock = threading.Lock()
 
 
 def _db_path() -> str:
     return get_db_path()
+
+
+def _connect(timeout: float = 30.0):
+    """Always open the withdrawal SQLite via the encrypted-at-rest layer."""
+    return open_secure_connection(_db_path(), check_same_thread=False, timeout=timeout)
 
 
 # ============================================================
@@ -73,7 +80,7 @@ def init_withdrawal_tables():
     Idempotent - peut etre appele plusieurs fois sans risque.
     """
     # Pas de _lock ici - appele au demarrage avant les threads
-    conn = sqlite3.connect(_db_path(), check_same_thread=False, timeout=30)
+    conn = _connect(timeout=30)
     conn.execute("PRAGMA journal_mode=WAL")  # Evite les blocages multi-threads
     conn.execute("PRAGMA busy_timeout=10000")
     conn.row_factory = sqlite3.Row
@@ -229,7 +236,7 @@ def init_withdrawal_tables():
 def _seed_default_rules():
     """Insere les regles par defaut si elles n'existent pas encore."""
     with _lock:
-        conn = sqlite3.connect(_db_path(), check_same_thread=False)
+        conn = _connect()
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
         c.execute("SELECT COUNT(*) as cnt FROM withdrawal_rules")
@@ -270,7 +277,7 @@ class WithdrawalRuleEngine:
     def get_rules() -> Dict[str, dict]:
         """Charge toutes les regles depuis SQLite."""
         with _lock:
-            conn = sqlite3.connect(_db_path(), check_same_thread=False)
+            conn = _connect()
             conn.row_factory = sqlite3.Row
             c = conn.cursor()
             c.execute("SELECT * FROM withdrawal_rules ORDER BY min_xmr ASC")
@@ -317,7 +324,7 @@ class WithdrawalRuleEngine:
         values = list(safe_updates.values()) + [datetime.utcnow().isoformat(), admin, tier]
 
         with _lock:
-            conn = sqlite3.connect(_db_path(), check_same_thread=False)
+            conn = _connect()
             c = conn.cursor()
             c.execute(
                 f"UPDATE withdrawal_rules SET {set_clause}, updated_at=?, updated_by=? WHERE tier=?",
@@ -340,7 +347,7 @@ class WithdrawalRuleEngine:
 
         today = datetime.utcnow().strftime('%Y-%m-%d')
         with _lock:
-            conn = sqlite3.connect(_db_path(), check_same_thread=False)
+            conn = _connect()
             conn.row_factory = sqlite3.Row
             c = conn.cursor()
             c.execute(
@@ -374,7 +381,7 @@ class WithdrawalRuleEngine:
         today = datetime.utcnow().strftime('%Y-%m-%d')
         now = datetime.utcnow().isoformat()
         with _lock:
-            conn = sqlite3.connect(_db_path(), check_same_thread=False)
+            conn = _connect()
             c = conn.cursor()
             c.execute("""
                 INSERT INTO withdrawal_daily_limits (username, date_key, total_xmr, count, updated_at)
@@ -441,7 +448,7 @@ class WithdrawalQueueManager:
         validation_level = 1 if not rule['require_dual_approval'] else 2
 
         with _lock:
-            conn = sqlite3.connect(_db_path(), check_same_thread=False)
+            conn = _connect()
             c = conn.cursor()
             c.execute("""
                 INSERT INTO withdrawal_queue
@@ -479,7 +486,7 @@ class WithdrawalQueueManager:
     def get_withdrawal(wid: str) -> Optional[dict]:
         """Recupere une demande de withdrawal par son ID."""
         with _lock:
-            conn = sqlite3.connect(_db_path(), check_same_thread=False)
+            conn = _connect()
             conn.row_factory = sqlite3.Row
             c = conn.cursor()
             c.execute("SELECT * FROM withdrawal_queue WHERE id=?", (wid,))
@@ -491,7 +498,7 @@ class WithdrawalQueueManager:
     def get_user_withdrawals(username: str, limit: int = 50) -> List[dict]:
         """Recupere l'historique des withdrawals d'un user."""
         with _lock:
-            conn = sqlite3.connect(_db_path(), check_same_thread=False)
+            conn = _connect()
             conn.row_factory = sqlite3.Row
             c = conn.cursor()
             c.execute("""
@@ -511,7 +518,7 @@ class WithdrawalQueueManager:
         Peut etre filtre par tier.
         """
         with _lock:
-            conn = sqlite3.connect(_db_path(), check_same_thread=False)
+            conn = _connect()
             conn.row_factory = sqlite3.Row
             c = conn.cursor()
             if tier:
@@ -534,7 +541,7 @@ class WithdrawalQueueManager:
     def get_all_withdrawals(status: str = None, limit: int = 200) -> List[dict]:
         """Recupere tous les withdrawals (vue admin complete)."""
         with _lock:
-            conn = sqlite3.connect(_db_path(), check_same_thread=False)
+            conn = _connect()
             conn.row_factory = sqlite3.Row
             c = conn.cursor()
             if status:
@@ -633,7 +640,7 @@ class WithdrawalQueueManager:
         values = list(update.values()) + [now, wid]
 
         with _lock:
-            conn = sqlite3.connect(_db_path(), check_same_thread=False)
+            conn = _connect()
             c = conn.cursor()
             c.execute(
                 f"UPDATE withdrawal_queue SET {', '.join(set_parts)} WHERE id=?",
@@ -659,7 +666,7 @@ class WithdrawalQueueManager:
         """Marque un withdrawal comme en cours de traitement on-chain."""
         now = datetime.utcnow().isoformat()
         with _lock:
-            conn = sqlite3.connect(_db_path(), check_same_thread=False)
+            conn = _connect()
             c = conn.cursor()
             c.execute("""
                 UPDATE withdrawal_queue
@@ -676,7 +683,7 @@ class WithdrawalQueueManager:
         """Marque un withdrawal comme complete (confirmed on-chain)."""
         now = datetime.utcnow().isoformat()
         with _lock:
-            conn = sqlite3.connect(_db_path(), check_same_thread=False)
+            conn = _connect()
             c = conn.cursor()
             c.execute("""
                 UPDATE withdrawal_queue
@@ -693,7 +700,7 @@ class WithdrawalQueueManager:
         """Permet a l'user d'annuler un withdrawal encore en pending."""
         now = datetime.utcnow().isoformat()
         with _lock:
-            conn = sqlite3.connect(_db_path(), check_same_thread=False)
+            conn = _connect()
             c = conn.cursor()
             c.execute("""
                 UPDATE withdrawal_queue
@@ -711,7 +718,7 @@ class WithdrawalQueueManager:
     def get_queue_stats() -> dict:
         """Statistiques globales de la file d'pending (vue admin)."""
         with _lock:
-            conn = sqlite3.connect(_db_path(), check_same_thread=False)
+            conn = _connect()
             conn.row_factory = sqlite3.Row
             c = conn.cursor()
             c.execute("""
@@ -812,7 +819,7 @@ class PartialSettlementManager:
         settlement_ids = []
 
         with _lock:
-            conn = sqlite3.connect(_db_path(), check_same_thread=False)
+            conn = _connect()
             c = conn.cursor()
 
             for i in range(num_tranches):
@@ -864,7 +871,7 @@ class PartialSettlementManager:
     def get_settlements_for_withdrawal(wid: str) -> List[dict]:
         """Recupere toutes les tranches d'un withdrawal partiel."""
         with _lock:
-            conn = sqlite3.connect(_db_path(), check_same_thread=False)
+            conn = _connect()
             conn.row_factory = sqlite3.Row
             c = conn.cursor()
             c.execute("""
@@ -881,7 +888,7 @@ class PartialSettlementManager:
         """Marque une tranche comme traitee (payment effectue)."""
         now = datetime.utcnow().isoformat()
         with _lock:
-            conn = sqlite3.connect(_db_path(), check_same_thread=False)
+            conn = _connect()
             conn.row_factory = sqlite3.Row
             c = conn.cursor()
             c.execute("SELECT * FROM partial_settlements WHERE id=?", (sid,))
@@ -912,7 +919,7 @@ class PartialSettlementManager:
         """Recupere toutes les tranches en pending (vue admin)."""
         now = datetime.utcnow().isoformat()
         with _lock:
-            conn = sqlite3.connect(_db_path(), check_same_thread=False)
+            conn = _connect()
             conn.row_factory = sqlite3.Row
             c = conn.cursor()
             c.execute("""
@@ -930,7 +937,7 @@ class PartialSettlementManager:
     def get_settlement_summary() -> dict:
         """Resume global des reglements partiels."""
         with _lock:
-            conn = sqlite3.connect(_db_path(), check_same_thread=False)
+            conn = _connect()
             conn.row_factory = sqlite3.Row
             c = conn.cursor()
             c.execute("""
@@ -1013,7 +1020,7 @@ class BalanceAdjustmentManager:
         now = datetime.utcnow().isoformat()
 
         with _lock:
-            conn = sqlite3.connect(_db_path(), check_same_thread=False)
+            conn = _connect()
             c = conn.cursor()
             c.execute("""
                 INSERT INTO balance_adjustments
@@ -1048,7 +1055,7 @@ class BalanceAdjustmentManager:
         Creates a reverse adjustment to preserve traceability.
         """
         with _lock:
-            conn = sqlite3.connect(_db_path(), check_same_thread=False)
+            conn = _connect()
             conn.row_factory = sqlite3.Row
             c = conn.cursor()
             c.execute("SELECT * FROM balance_adjustments WHERE id=?", (adj_id,))
@@ -1073,7 +1080,7 @@ class BalanceAdjustmentManager:
         rev_id = f"ADJ_REV_{secrets.token_hex(8).upper()}"
 
         with _lock:
-            conn = sqlite3.connect(_db_path(), check_same_thread=False)
+            conn = _connect()
             c = conn.cursor()
             # Marquer l'original comme cancelled
             c.execute("""
@@ -1110,7 +1117,7 @@ class BalanceAdjustmentManager:
     def get_user_adjustments(username: str, limit: int = 50) -> List[dict]:
         """Recupere l'historique des ajustements d'un user."""
         with _lock:
-            conn = sqlite3.connect(_db_path(), check_same_thread=False)
+            conn = _connect()
             conn.row_factory = sqlite3.Row
             c = conn.cursor()
             c.execute("""
@@ -1127,7 +1134,7 @@ class BalanceAdjustmentManager:
     def get_all_adjustments(limit: int = 200) -> List[dict]:
         """Recupere tous les ajustements (vue admin)."""
         with _lock:
-            conn = sqlite3.connect(_db_path(), check_same_thread=False)
+            conn = _connect()
             conn.row_factory = sqlite3.Row
             c = conn.cursor()
             c.execute("""
@@ -1143,7 +1150,7 @@ class BalanceAdjustmentManager:
     def get_adjustment_stats() -> dict:
         """Statistiques globales des ajustements."""
         with _lock:
-            conn = sqlite3.connect(_db_path(), check_same_thread=False)
+            conn = _connect()
             conn.row_factory = sqlite3.Row
             c = conn.cursor()
             c.execute("""
@@ -1325,7 +1332,7 @@ class LiquidityEngine:
         """Persiste un snapshot dans SQLite."""
         sid = f"SNAP_{secrets.token_hex(8).upper()}"
         with _lock:
-            conn = sqlite3.connect(_db_path(), check_same_thread=False)
+            conn = _connect()
             c = conn.cursor()
             c.execute("""
                 INSERT INTO liquidity_snapshots
@@ -1360,7 +1367,7 @@ class LiquidityEngine:
     def get_snapshots(limit: int = 48) -> List[dict]:
         """Recupere les derniers snapshots (pour graphiques)."""
         with _lock:
-            conn = sqlite3.connect(_db_path(), check_same_thread=False)
+            conn = _connect()
             conn.row_factory = sqlite3.Row
             c = conn.cursor()
             c.execute("""
@@ -1376,7 +1383,7 @@ class LiquidityEngine:
     def get_latest_snapshot() -> Optional[dict]:
         """Recupere le snapshot le plus recent."""
         with _lock:
-            conn = sqlite3.connect(_db_path(), check_same_thread=False)
+            conn = _connect()
             conn.row_factory = sqlite3.Row
             c = conn.cursor()
             c.execute("""
@@ -1425,7 +1432,7 @@ class PlatformControlManager:
     def _init_config_table():
         """Creates the platform_config table if missing."""
         with _lock:
-            conn = sqlite3.connect(_db_path(), check_same_thread=False)
+            conn = _connect()
             c = conn.cursor()
             c.execute("""
                 CREATE TABLE IF NOT EXISTS platform_config (
@@ -1470,7 +1477,7 @@ class PlatformControlManager:
     def _get(key: str) -> str:
         """Lit une valeur de configuration."""
         with _lock:
-            conn = sqlite3.connect(_db_path(), check_same_thread=False)
+            conn = _connect()
             conn.row_factory = sqlite3.Row
             c = conn.cursor()
             c.execute("SELECT value FROM platform_config WHERE key=?", (key,))
@@ -1483,7 +1490,7 @@ class PlatformControlManager:
         """Ecrit une valeur de configuration."""
         now = datetime.utcnow().isoformat()
         with _lock:
-            conn = sqlite3.connect(_db_path(), check_same_thread=False)
+            conn = _connect()
             c = conn.cursor()
             c.execute("""
                 UPDATE platform_config SET value=?, updated_at=?, updated_by=?
@@ -1520,7 +1527,7 @@ class PlatformControlManager:
             "liquidity_protection_mode": {
                 "active": lpm_active,
                 "user_message": (
-                    "⚠️ Liquidity Protection Mode is active - withdrawals may be processed "
+                    "âš ï¸ Liquidity Protection Mode is active - withdrawals may be processed "
                     "in multiple installments over time. Your funds are safe and fully accounted for."
                 ) if lpm_active else None,
             },
@@ -1533,7 +1540,7 @@ class PlatformControlManager:
                 "threshold_xmr": structured_threshold,
                 "coverage_trigger": structured_coverage,
                 "user_message": (
-                    f"ℹ️ Withdrawals above {structured_threshold:.2f} XMR are currently processed "
+                    f"â„¹ï¸ Withdrawals above {structured_threshold:.2f} XMR are currently processed "
                     f"as structured payments in multiple installments. "
                     f"You will receive a detailed schedule upon approval."
                 ) if structured_active else None,
@@ -1756,7 +1763,7 @@ class PlatformControlManager:
 
         if policy_active and amount_xmr >= threshold:
             apply = True
-            reason = f"Structured withdrawal policy active (amount {amount_xmr:.4f} XMR ≥ threshold {threshold:.2f} XMR)"
+            reason = f"Structured withdrawal policy active (amount {amount_xmr:.4f} XMR â‰¥ threshold {threshold:.2f} XMR)"
 
         if coverage_ratio is not None and coverage_ratio < coverage_trigger:
             apply = True
@@ -1844,7 +1851,7 @@ class PlatformControlManager:
     def get_admin_config() -> dict:
         """Returns la configuration complete pour le dashboard admin."""
         with _lock:
-            conn = sqlite3.connect(_db_path(), check_same_thread=False)
+            conn = _connect()
             conn.row_factory = sqlite3.Row
             c = conn.cursor()
             c.execute("SELECT * FROM platform_config ORDER BY key ASC")
@@ -1892,5 +1899,6 @@ init_withdrawal_tables()
 PlatformControlManager._init_config_table()
 print("[WITHDRAWAL] Withdrawal & Liquidity Management System loaded")
 print("[PLATFORM]  Platform Control Manager initialized")
+
 
 

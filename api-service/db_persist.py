@@ -1,13 +1,22 @@
 """
-SILKGENESIS - SQLite Persistence Layer
+SILKGENESIS - SQLite Persistence Layer (encrypted at rest via SQLCipher)
 Sauvegarde les orders, messages et reviews sur disque.
 Survit aux redemarrages du serveur.
+
+Toutes les connexions passent par secure_storage.open_secure_connection
+qui applique la cle SILKGENESIS_DB_KEY (PRAGMA key) en SQLCipher.
 """
-import sqlite3
+import sqlite3  # garde sqlite3 import pour Row si SQLCipher absent (dev)
 import json
 import os
 import threading
 from datetime import datetime
+
+from secure_storage import (
+    open_secure_connection,
+    LegacyPlaintextDB,
+    migrate_db_to_encrypted,
+)
 
 _lock = threading.Lock()
 
@@ -30,9 +39,13 @@ def get_db_path() -> str:
 
 
 def get_conn():
-    conn = sqlite3.connect(get_db_path(), check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
+    path = get_db_path()
+    try:
+        return open_secure_connection(path, check_same_thread=False)
+    except LegacyPlaintextDB:
+        # Migration automatique au premier acces : la base existe encore en clair.
+        migrate_db_to_encrypted(path)
+        return open_secure_connection(path, check_same_thread=False)
 
 def init_db():
     """Creer les tables si elles n'existent pas"""

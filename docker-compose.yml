@@ -19,8 +19,11 @@ services:
       - "127.0.0.1:8080:80"
     volumes:
       - ./frontend/build:/app/frontend/build:ro
-      - ./gateway/tor-data:/var/lib/tor
-      - ./gateway/tor-logs:/var/log/tor
+      # Volumes nommes : la cle privee de l'onion service N'EST PAS exposee
+      # sur le filesystem hote (/var/lib/tor/.../hs_ed25519_secret_key reste
+      # interne au volume Docker, accessible uniquement via 'docker volume ...').
+      - silkgenesis_tor_data:/var/lib/tor
+      - silkgenesis_tor_logs:/var/log/tor
     restart: unless-stopped
 
   api:
@@ -37,6 +40,8 @@ services:
       SILKGENESIS_DATA_DIR: /app/data
       MONERO_RPC_URL: ${MONERO_RPC_URL:-http://host.docker.internal:18082/json_rpc}
       PRICE_ORACLE_URL: http://price-oracle:9000/latest
+      # On ne fait confiance qu'au service "gateway" (nginx) sur le reseau interne.
+      SILKGENESIS_TRUSTED_PROXIES: ${SILKGENESIS_TRUSTED_PROXIES:-gateway}
     volumes:
       - silkgenesis_prod_data:/app/data
     expose:
@@ -104,3 +109,5 @@ networks:
 
 volumes:
   silkgenesis_prod_data:
+  silkgenesis_tor_data:
+  silkgenesis_tor_logs:

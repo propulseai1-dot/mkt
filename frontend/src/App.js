@@ -1745,10 +1745,32 @@ function GeneralChatModal({ isOpen, onClose, buyer, vendor, currentUser, current
   const sendMessage = async () => {
     if (!newMsg.trim()) return;
     try {
+      // E2E: chiffrer cote client avec la cle publique du destinataire.
+      const recipient = currentUser === buyer ? vendor : buyer;
+      const { fetchUserPublicKey, encryptForRecipient } = await import('./pgpClient');
+      let recipientPub;
+      try {
+        recipientPub = await fetchUserPublicKey((p) => silkGenesisApiUrl(p), recipient);
+      } catch (e) {
+        alert('Cannot fetch recipient PGP key.');
+        return;
+      }
+      if (!recipientPub) {
+        alert('Recipient has no PGP key. Chat blocked.');
+        return;
+      }
+      let armored;
+      try {
+        armored = await encryptForRecipient(newMsg, recipientPub);
+      } catch (e) {
+        alert('Local PGP encryption failed: ' + (e?.message || e));
+        return;
+      }
       const res = await (authFetch || fetch)('/api/chat/general', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ buyer, vendor, sender: currentUser, message: newMsg, encrypted: false })
+        credentials: 'include',
+        body: JSON.stringify({ buyer, vendor, sender: currentUser, message: armored, encrypted: true })
       });
       const data = await res.json();
       if (!res.ok) {
@@ -1756,8 +1778,8 @@ function GeneralChatModal({ isOpen, onClose, buyer, vendor, currentUser, current
           alert('Mandatory PGP setup is required for both users before chat. Complete setup in Identity.');
           return;
         }
-        if (data?.detail === 'PGP_REQUIRED_FOR_CHAT') {
-          alert('PGP key required for both users. Chat is blocked until both parties set a PGP key in Profile.');
+        if (data?.detail === 'PGP_REQUIRED_FOR_CHAT' || data?.detail === 'MESSAGE_MUST_BE_PGP_ARMORED') {
+          alert('PGP required for both users. Chat is blocked until both parties have a PGP key.');
           return;
         }
         if (data?.detail === 'SESSION_TOKEN_REQUIRED' || data?.detail === 'INVALID_SESSION') {
@@ -1837,10 +1859,39 @@ function OrderChatModal({ isOpen, onClose, orderId, currentUser, currentToken, a
   const sendMessage = async () => {
     if (!newMsg.trim()) return;
     try {
+      // Lookup the order to discover the recipient.
+      const orderRes = await (authFetch || fetch)(`/api/orders/${orderId}`);
+      const orderJson = orderRes.ok ? await orderRes.json() : null;
+      const order = orderJson?.order || orderJson;
+      if (!order || !order.buyer || !order.vendor) {
+        alert('Order not found.');
+        return;
+      }
+      const recipient = currentUser === order.buyer ? order.vendor : order.buyer;
+      const { fetchUserPublicKey, encryptForRecipient } = await import('./pgpClient');
+      let recipientPub;
+      try {
+        recipientPub = await fetchUserPublicKey((p) => silkGenesisApiUrl(p), recipient);
+      } catch (e) {
+        alert('Cannot fetch recipient PGP key.');
+        return;
+      }
+      if (!recipientPub) {
+        alert('Recipient has no PGP key. Order chat blocked.');
+        return;
+      }
+      let armored;
+      try {
+        armored = await encryptForRecipient(newMsg, recipientPub);
+      } catch (e) {
+        alert('Local PGP encryption failed: ' + (e?.message || e));
+        return;
+      }
       const res = await (authFetch || fetch)('/api/chat/order', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ order_id: orderId, sender: currentUser, message: newMsg })
+        credentials: 'include',
+        body: JSON.stringify({ order_id: orderId, sender: currentUser, message: armored })
       });
       const data = await res.json();
       if (!res.ok) {
@@ -1848,8 +1899,8 @@ function OrderChatModal({ isOpen, onClose, orderId, currentUser, currentToken, a
           alert('Mandatory PGP setup is required for both users before order chat. Complete setup in Identity.');
           return;
         }
-        if (data?.detail === 'PGP_REQUIRED_FOR_CHAT') {
-          alert('PGP key required for both users. Order chat is blocked until both parties set a PGP key.');
+        if (data?.detail === 'PGP_REQUIRED_FOR_CHAT' || data?.detail === 'MESSAGE_MUST_BE_PGP_ARMORED') {
+          alert('PGP required for both users. Order chat is blocked.');
           return;
         }
         if (data?.detail === 'SESSION_TOKEN_REQUIRED' || data?.detail === 'INVALID_SESSION') {
@@ -3056,7 +3107,18 @@ function AntiPhishingLogin({ onLogin }) {
     setError('');
     try {
       const body = { username: username.trim(), password: password.trim() };
-      if (step === 3) body.totp_code = totpCode.trim();
+      if (step === 3) {
+        body.totp_code = totpCode.trim();
+      } else {
+        try {
+          const { mineProofOfWork } = await import('./silkApi');
+          body.pow_solution = await mineProofOfWork('login');
+        } catch (powErr) {
+          setError('Proof-of-Work failed. Refresh and try again.');
+          setLoading(false);
+          return;
+        }
+      }
       const resp = await fetch(silkGenesisApiUrl('/api/login'), {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -3385,7 +3447,9 @@ function SessionSecurityCenter({ currentUser }) {
     setLoading(true);
     setStatus('');
     try {
-      const res = await fetch(`/api/security/sessions?token=${encodeURIComponent(token)}`);
+      const res = await fetch('/api/security/sessions', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
       const data = await res.json();
       if (res.ok) {
         setSessions(Array.isArray(data.sessions) ? data.sessions : []);
@@ -3408,8 +3472,11 @@ function SessionSecurityCenter({ currentUser }) {
     try {
       const res = await fetch('/api/security/sessions/logout-all', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token })
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify({})
       });
       const data = await res.json();
       if (res.ok) {
@@ -4474,20 +4541,31 @@ function App() {
         }
       } catch (e) {}
     }
-    
-    const headers = {
-      ...options.headers,
-    };
-    
-    if (token) {
-      headers['Authorization'] = `Bearer ${token}`;
+
+    const headers = new Headers(options.headers || {});
+    // Bearer for legacy clients/SDK; cookie auth is also sent via credentials:'include'.
+    if (token) headers.set('Authorization', `Bearer ${token}`);
+    // CSRF double-submit: copy the sg_csrf cookie value into the request header.
+    const method = (options.method || 'GET').toUpperCase();
+    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
+      try {
+        const m = (typeof document !== 'undefined' ? document.cookie : '')
+          .split(/;\s*/)
+          .map(s => s.split('='))
+          .find(([k]) => decodeURIComponent(k || '') === 'sg_csrf');
+        if (m && !headers.has('X-CSRF-Token')) headers.set('X-CSRF-Token', decodeURIComponent(m[1] || ''));
+      } catch (e) { /* no-op */ }
     }
-    
+
     const resolvedUrl =
       typeof url === 'string' && url.startsWith('/') && !url.startsWith('//')
         ? silkGenesisApiUrl(url)
         : url;
-    const res = await fetch(resolvedUrl, { ...options, headers });
+    const res = await fetch(resolvedUrl, {
+      ...options,
+      headers,
+      credentials: options.credentials ?? 'include',
+    });
     if (res.status === 401 && !authFailureHandledRef.current) {
       authFailureHandledRef.current = true;
       localStorage.removeItem('silkGenesis_session');
@@ -4899,11 +4977,20 @@ function App() {
     // Sinon login classique (username, password, token [, totp_code])
     const username = usernameOrUser;
     const password = passwordOrToken;
-    const token = tokenArg;
     const totp_code = typeof totpCodeOpt === 'string' ? totpCodeOpt.trim() : '';
     try {
-      const payload = { username, password, pow_solution: token };
-      if (totp_code) payload.totp_code = totp_code;
+      const payload = { username, password };
+      if (totp_code) {
+        payload.totp_code = totp_code;
+      } else {
+        try {
+          const { mineProofOfWork } = await import('./silkApi');
+          payload.pow_solution = await mineProofOfWork('login');
+        } catch {
+          alert('Proof-of-Work failed. Try again.');
+          return 'fail';
+        }
+      }
       const res = await fetch(silkGenesisApiUrl('/api/login'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -4946,7 +5033,7 @@ function App() {
     }
   };
 
-  const handleRegister = async (username, password, token) => {
+  const handleRegister = async (username, password /* legacy token arg ignored */) => {
     let referral_code = null;
     try {
       const pending = sessionStorage.getItem('silk_pending_ref');
@@ -4954,11 +5041,40 @@ function App() {
     } catch {
       /* ignore */
     }
-    const body = { username, password, pow_solution: token };
+
+    // 1) Mine PoW
+    let pow_solution;
+    try {
+      const { mineProofOfWork } = await import('./silkApi');
+      pow_solution = await mineProofOfWork('register');
+    } catch {
+      alert('Proof-of-Work failed. Try again.');
+      return false;
+    }
+
+    // 2) Generate the PGP keypair LOCALLY (the server never sees the private key).
+    let pgpKeys;
+    try {
+      const { generatePgpKeyPair, savePgpKeysLocal } = await import('./pgpClient');
+      pgpKeys = await generatePgpKeyPair(username, password);
+      savePgpKeysLocal(pgpKeys);
+    } catch (e) {
+      alert('PGP keypair generation failed in the browser: ' + (e?.message || e));
+      return false;
+    }
+
+    const body = {
+      username,
+      password,
+      pow_solution,
+      pgp_public_key: pgpKeys.publicKey,
+    };
     if (referral_code) body.referral_code = referral_code;
+
     const res = await fetch(silkGenesisApiUrl('/api/register'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify(body)
     });
     if (res.ok) {
@@ -4968,12 +5084,16 @@ function App() {
         /* ignore */
       }
       const data = await res.json();
-      if (data.pgp_generated && data.pgp_private_key_encrypted) {
-        setNewUserPGPData(data);
-        setShowPGPKeyModal(true);
-      } else {
-        alert("IDENTITY FABRICATED. LOGIN NOW.");
-      }
+      // Le client expose la cle privee armored (chiffree par passphrase) pour
+      // que l'utilisateur la sauvegarde — le serveur ne l'a jamais vue.
+      setNewUserPGPData({
+        ...data,
+        pgp_public_key: pgpKeys.publicKey,
+        pgp_private_key_encrypted: pgpKeys.privateKey,
+        pgp_fingerprint: pgpKeys.fingerprint,
+        pgp_warning: data.pgp_warning,
+      });
+      setShowPGPKeyModal(true);
       return true;
     }
     else { const d = await res.json(); alert(d.detail); return false; }

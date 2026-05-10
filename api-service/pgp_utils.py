@@ -392,11 +392,18 @@ def _encrypt_with_rsa_key(pub_key_armored: str, message: str) -> dict:
 
 
 def _encrypt_symmetric(message: str, error: str) -> dict:
-    """Dernier recours: retourner le message non encrypted avec warning"""
+    """
+    SECURITE : on ne renvoie JAMAIS le plaintext.
+    Si on est dans cette branche, le chiffrement asymetrique a echoue
+    (cle invalide, dependance manquante, parsing). On retourne un statut
+    d'erreur sans le message original ; les callers (chat, etc.) sont
+    responsables de retourner une erreur HTTP au client (et de NE PAS
+    persister le message).
+    """
     return {
         "encrypted": False,
-        "content": message,
-        "warning": f"ENCRYPTION_FAILED: {error[:100]}"
+        "content": None,
+        "warning": f"ENCRYPTION_FAILED: {(error or 'unknown')[:100]}",
     }
 
 

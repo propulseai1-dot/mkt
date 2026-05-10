@@ -28,7 +28,7 @@ from affiliate_program import (
     leaderboard_current_month,
 )
 
-from fastapi import FastAPI, HTTPException, Request, Depends, Header
+from fastapi import FastAPI, HTTPException, Request, Response, Depends, Header
 from fastapi.responses import JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -61,6 +61,9 @@ from security import (
 # Rate limiter
 from rate_limiter import check_rate_limit, get_rate_limit_retry_after
 
+# Proof-of-Work
+from pow import issue_challenge as pow_issue_challenge, verify_pow
+
 # Audit log
 from audit_log import AuditEvent, log, log_security, log_admin, get_recent_logs
 
@@ -71,6 +74,17 @@ from price_oracle_client import get_prices
 
 # PGP
 from pgp_utils import generate_pgp_keypair, validate_pgp_public_key, encrypt_message
+
+
+def _looks_like_pgp_armor(s: str) -> bool:
+    """Quick sanity check: refuses plaintext from a malicious or buggy client.
+    The full cryptographic validity is the recipient's responsibility (E2E)."""
+    if not isinstance(s, str):
+        return False
+    s2 = s.strip()
+    if len(s2) < 64 or len(s2) > 64_000:
+        return False
+    return s2.startswith("-----BEGIN PGP MESSAGE-----") and s2.rstrip().endswith("-----END PGP MESSAGE-----")
 
 # Withdrawal limits
 MIN_WITHDRAWAL_XMR = 0.01
@@ -165,18 +179,100 @@ def _is_test_godmode_username(username: str) -> bool:
         and username.lower() == TEST_GODMODE_USERNAME
     )
 
-def get_current_session(auth: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme)):
-    """Dependency to get current session from token in Authorization header."""
-    if not auth:
+# ============================================================
+# Session cookie + CSRF helpers
+# ============================================================
+SESSION_COOKIE_NAME = "sg_session"
+CSRF_COOKIE_NAME = "sg_csrf"          # readable by JS, used in double-submit pattern
+CSRF_HEADER_NAME = "X-CSRF-Token"
+SESSION_COOKIE_MAX_AGE = 60 * 60 * 24 * 7  # 7 jours
+_COOKIE_SECURE = os.environ.get("SILKGENESIS_ENV", "development").lower() == "production"
+
+# Methodes mutantes qui DOIVENT presenter le double-submit token CSRF.
+_CSRF_PROTECTED_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+# Endpoints publics exemptes (login, register, pow): pas de cookie deja pose.
+_CSRF_EXEMPT_PATHS = {
+    "/api/login",
+    "/api/register",
+    "/api/pow/challenge",
+    "/api/auth/check-user",
+    "/api/2fa/setup",
+    "/api/2fa/enable",
+}
+
+
+def _set_session_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=token,
+        max_age=SESSION_COOKIE_MAX_AGE,
+        httponly=True,
+        secure=_COOKIE_SECURE,
+        samesite="strict",
+        path="/",
+    )
+    response.set_cookie(
+        key=CSRF_COOKIE_NAME,
+        value=secrets.token_urlsafe(24),
+        max_age=SESSION_COOKIE_MAX_AGE,
+        httponly=False,  # lisible par JS (pattern double-submit)
+        secure=_COOKIE_SECURE,
+        samesite="strict",
+        path="/",
+    )
+
+
+def _clear_session_cookie(response: Response) -> None:
+    for name in (SESSION_COOKIE_NAME, CSRF_COOKIE_NAME):
+        response.delete_cookie(key=name, path="/", samesite="strict")
+
+
+def _check_csrf(request: Request) -> None:
+    """Double-submit CSRF check on state-changing methods."""
+    if request.method.upper() not in _CSRF_PROTECTED_METHODS:
+        return
+    # Exempt only when the request has no session cookie (anonymous bootstrap calls).
+    cookie_token = request.cookies.get(CSRF_COOKIE_NAME)
+    has_session_cookie = bool(request.cookies.get(SESSION_COOKIE_NAME))
+    if not has_session_cookie:
+        return  # Bearer-based / anonymous: no cookie, no CSRF.
+    header_token = request.headers.get(CSRF_HEADER_NAME, "")
+    if not cookie_token or not header_token or not secrets.compare_digest(cookie_token, header_token):
+        raise HTTPException(status_code=403, detail="CSRF_TOKEN_INVALID")
+
+
+def get_current_session(
+    request: Request,
+    auth: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme),
+):
+    """
+    Resolve the active session from EITHER:
+      1) Authorization: Bearer <token>  (legacy clients / SDK / SSE)
+      2) sg_session HttpOnly cookie     (browser clients, set at /api/login)
+    A CSRF double-submit token is required for cookie-based mutating requests.
+    """
+    token: str = ""
+    via_cookie = False
+    if auth and (auth.credentials or "").strip():
+        token = auth.credentials.strip()
+    else:
+        cookie_token = (request.cookies.get(SESSION_COOKIE_NAME) or "").strip()
+        if cookie_token:
+            token = cookie_token
+            via_cookie = True
+
+    if not token:
         raise HTTPException(status_code=401, detail="SESSION_TOKEN_REQUIRED")
-        
-    token = auth.credentials
+
     session = validate_session(token)
     if not session:
         raise HTTPException(status_code=401, detail="INVALID_SESSION")
-    
-    # Add token to session for internal use
+
+    if via_cookie and request.url.path not in _CSRF_EXEMPT_PATHS:
+        _check_csrf(request)
+
     session["token"] = token
+    session["via_cookie"] = via_cookie
     return session
 
 
@@ -346,16 +442,17 @@ USERS_PERSIST_FILE = os.path.join(persist_base_dir(), "users_persist.json")
 def save_vendor_listings():
     try:
         vl = {k: v for k, v in listings_db.items() if v.get('is_vendor_listing', False)}
-        with open(VENDOR_LISTINGS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(vl, f, ensure_ascii=False, indent=2)
+        from secure_storage import encrypted_json_save
+        encrypted_json_save(VENDOR_LISTINGS_FILE, vl)
     except Exception as e:
         _dev_print(f'[WARNING] save_vendor_listings: {e}')
 
 def load_vendor_listings():
     if os.path.exists(VENDOR_LISTINGS_FILE):
         try:
-            with open(VENDOR_LISTINGS_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
+            from secure_storage import encrypted_json_load
+            data = encrypted_json_load(VENDOR_LISTINGS_FILE, default={}) or {}
+            if data:
                 listings_db.update(data)
                 _dev_print(f'[OK] Loaded {len(data)} vendor listings from disk')
         except Exception as e:
@@ -396,8 +493,8 @@ def save_users_persist():
                 "founder_vendor_serial": user.get("founder_vendor_serial"),
                 "founder_vendor_granted_at": user.get("founder_vendor_granted_at"),
             }
-        with open(USERS_PERSIST_FILE, 'w', encoding='utf-8') as f:
-            json.dump(persist, f, ensure_ascii=False, indent=2)
+        from secure_storage import encrypted_json_save
+        encrypted_json_save(USERS_PERSIST_FILE, persist)
     except Exception as e:
         _dev_print(f'[WARNING] save_users_persist JSON: {e}')
 
@@ -405,8 +502,8 @@ def load_users_persist():
     """Load les data persistantes des users au demarrage"""
     if os.path.exists(USERS_PERSIST_FILE):
         try:
-            with open(USERS_PERSIST_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
+            from secure_storage import encrypted_json_load
+            data = encrypted_json_load(USERS_PERSIST_FILE, default={}) or {}
             for username, saved in data.items():
                 if username in users_db:
                     # Mettre a jour les champs persistants
@@ -451,19 +548,24 @@ def load_users_persist():
 app.add_middleware(GZipMiddleware, minimum_size=500)
 
 # CORS
+# Pour les cookies HttpOnly, allow_credentials=True est indispensable, ce qui IMPOSE
+# une whitelist d'origines explicite (pas de wildcard). On rejette toute origine vide
+# ou contenant "*" pour eviter une mauvaise config.
 _allowed_origins_raw = os.environ.get(
     "SILKGENESIS_ALLOWED_ORIGINS",
     "http://localhost:3000,http://127.0.0.1:3000,http://0.0.0.0:3000,http://localhost:8080,http://127.0.0.1:8080,http://0.0.0.0:8080",
 )
 if IS_PRODUCTION and not os.environ.get("SILKGENESIS_ALLOWED_ORIGINS"):
     raise RuntimeError("SILKGENESIS_ALLOWED_ORIGINS must be set in production.")
-ALLOWED_ORIGINS = [o.strip() for o in _allowed_origins_raw.split(",") if o.strip()]
+ALLOWED_ORIGINS = [o.strip() for o in _allowed_origins_raw.split(",") if o.strip() and "*" not in o]
+if not ALLOWED_ORIGINS:
+    raise RuntimeError("SILKGENESIS_ALLOWED_ORIGINS must list at least one explicit origin.")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
+    allow_headers=["Authorization", "Content-Type", "X-Requested-With", "X-CSRF-Token"],
 )
 
 
@@ -955,6 +1057,58 @@ _dev_print("[OK] Auto-wipe thread started (168h / 7 days)")
 # ============================================================
 REFERRAL_BONUS_REFEREE = 0.01   # XMR bonus pour le nouveau (0.01 XMR)
 REFERRAL_BONUS_REFERRER = 0.005  # XMR bonus pour le parrain (0.005 XMR)
+
+# Volume mini (XMR) qu'un filleul doit avoir reellement achete avant
+# que le bonus referral soit credite (anti-sybil).
+REFERRAL_QUALIFY_MIN_VOLUME = float(
+    os.environ.get("SILKGENESIS_REFERRAL_MIN_VOLUME_XMR", "0.05")
+)
+
+
+def _credit_referral_on_purchase(buyer_username: str, order_total_xmr: float) -> None:
+    """
+    A appeler lors qu'une commande passe en 'completed'. Credite le bonus
+    referral UNE SEULE FOIS, et seulement si le filleul a depasse le seuil
+    REFERRAL_QUALIFY_MIN_VOLUME en achats finalises.
+    """
+    try:
+        if not buyer_username or buyer_username not in users_db:
+            return
+        buyer = users_db[buyer_username]
+        owner = buyer.get("referred_by")
+        if not owner or owner not in users_db:
+            return
+        if buyer.get("referral_bonus_credited"):
+            return
+
+        # Met a jour le volume "qualifie"
+        new_vol = float(buyer.get("referral_qualified_volume_xmr", 0.0)) + float(order_total_xmr or 0.0)
+        buyer["referral_qualified_volume_xmr"] = new_vol
+        if new_vol < REFERRAL_QUALIFY_MIN_VOLUME:
+            return
+
+        with funds_rlock:
+            users_db[buyer_username]["balance"] = float(buyer.get("balance", 0.0)) + REFERRAL_BONUS_REFEREE
+            users_db[owner]["balance"] = float(users_db[owner].get("balance", 0.0)) + REFERRAL_BONUS_REFERRER
+            buyer["referral_bonus_credited"] = True
+
+            # Met a jour la table des referrals : marquer comme credite
+            for code, info in referrals_db.items():
+                if info.get("owner") == owner:
+                    info["uses"] = int(info.get("uses", 0)) + 1
+                    info["earnings_xmr"] = float(info.get("earnings_xmr", 0.0)) + REFERRAL_BONUS_REFERRER
+                    for r in info.get("referrals", []):
+                        if r.get("username") == buyer_username:
+                            r["credited"] = True
+                            r["credited_at"] = datetime.utcnow().isoformat()
+                    break
+        save_users_persist()
+        log("REFERRAL_CREDITED", buyer_username, {"owner": owner, "volume_xmr": new_vol})
+    except Exception as e:
+        try:
+            _log.error("referral credit failed: %s", type(e).__name__)
+        except Exception:
+            pass
 REFERRAL_COMMISSION_RATE = 0.02  # 2% des achats du filleul pendant 30 jours
 
 def generate_referral_code(username):
@@ -1704,6 +1858,15 @@ def _resolve_user_db_key(raw_username: str):
     return None
 
 
+@app.get("/api/pow/challenge")
+def get_pow_challenge(context: str = "login"):
+    """Issue a PoW challenge for the requested context (login | register)."""
+    ctx = (context or "login").strip().lower()
+    if ctx not in ("login", "register"):
+        raise HTTPException(status_code=400, detail="INVALID_CONTEXT")
+    return pow_issue_challenge(ctx)
+
+
 @app.post("/api/register")
 def register(data: dict):
     raw = (data.get("username") or "").strip()
@@ -1712,7 +1875,16 @@ def register(data: dict):
     if not re.fullmatch(r"[A-Za-z0-9_\-]+", raw):
         return {"detail": "INVALID_USERNAME"}, 400
     username = raw.lower()
-    # Rate limiting sur le username canonique
+
+    # Proof-of-Work obligatoire pour limiter le register-spam (Tor masque l'IP).
+    if not verify_pow(data.get("pow_solution") or "", expected_context="register"):
+        raise HTTPException(status_code=400, detail="POW_REQUIRED")
+
+    # Rate limiting global anonyme (en plus du username) — Tor → tout vient de 127.0.0.1,
+    # mais on conserve un compteur pour eviter qu'un seul attaquant nous noie.
+    if not check_rate_limit("register", "global"):
+        retry = get_rate_limit_retry_after("register", "global")
+        return {"detail": "RATE_LIMITED", "retry_after": retry, "message": f"Too many registrations. Wait {retry}s."}, 429
     if not check_rate_limit("register", username):
         retry = get_rate_limit_retry_after("register", username)
         return {"detail": "RATE_LIMITED", "retry_after": retry, "message": f"Too many registrations. Wait {retry}s."}, 429
@@ -1743,15 +1915,27 @@ def register(data: dict):
         xmr_addr = f"PENDING_{secrets.token_hex(20)}"
         _dev_print(f"[WARNING] RPC offline - temporary address for {username}: {xmr_addr[:20]}...")
     
-    # Generate automatiquement une paire de cles PGP RSA-4096
-    pgp_result = generate_pgp_keypair(username, data["password"])
-    pgp_public_key = pgp_result.get("public_key") if pgp_result["success"] else None
-    pgp_private_key_encrypted = pgp_result.get("private_key") if pgp_result["success"] else None
-    pgp_fingerprint = pgp_result.get("fingerprint") if pgp_result["success"] else None
-    if pgp_result["success"]:
-        _dev_print(f"[PGP] Keys generated for {username}: {pgp_fingerprint}")
-    else:
-        _dev_print(f"[PGP WARNING] Key generation failed for {username}: {pgp_result.get('error')}")
+    # ========================================================
+    # PGP — generation client-side desormais (openpgp.js navigateur).
+    # Le client envoie sa cle publique armored au registration.
+    # Le serveur ne voit JAMAIS la cle privee ni la passphrase.
+    # ========================================================
+    client_pub_key = (data.get("pgp_public_key") or "").strip()
+    if not client_pub_key:
+        raise HTTPException(
+            status_code=400,
+            detail="PGP_PUBLIC_KEY_REQUIRED: generate a key in your browser before registering",
+        )
+    if len(client_pub_key) > 32_000:
+        raise HTTPException(status_code=400, detail="PGP_PUBLIC_KEY_TOO_LARGE")
+    pgp_validation = validate_pgp_public_key(client_pub_key)
+    if not pgp_validation.get("valid"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"PGP_PUBLIC_KEY_INVALID: {pgp_validation.get('error', 'unparseable')}",
+        )
+    pgp_public_key = client_pub_key
+    pgp_fingerprint = pgp_validation.get("fingerprint")
 
     users_db[username] = {
         "username": username,
@@ -1764,10 +1948,11 @@ def register(data: dict):
         "avatar": None,
         "pos": 0,
         "pgp_public_key": pgp_public_key,
-        "pgp_private_key_encrypted": pgp_private_key_encrypted,
+        # Le serveur ne stocke plus de cle privee, meme chiffree par mot de passe.
+        "pgp_private_key_encrypted": None,
         "pgp_fingerprint": pgp_fingerprint,
-        "pgp_setup_completed": False,
-        "pgp_private_key_viewed": False,
+        "pgp_setup_completed": True,  # cle valide presente, plus de wizard server-side
+        "pgp_private_key_viewed": True,
         "anti_phishing_phrase": data.get("anti_phishing_phrase", None),
         "founder_vendor_badge": False,
         "founder_vendor_serial": None,
@@ -1777,25 +1962,27 @@ def register(data: dict):
     if referral_code and referral_code in referrals_db:
         ref_data = referrals_db[referral_code]
         if ref_data["owner"] != username:
-            with funds_rlock:
-                users_db[username]["referred_by"] = ref_data["owner"]
-                users_db[username]["balance"] += REFERRAL_BONUS_REFEREE
-                owner = ref_data["owner"]
-                if owner in users_db:
-                    users_db[owner]["balance"] = users_db[owner].get("balance", 0) + REFERRAL_BONUS_REFERRER
-                referrals_db[referral_code]["uses"] += 1
-                referrals_db[referral_code]["earnings_xmr"] += REFERRAL_BONUS_REFERRER
-                referrals_db[referral_code]["referrals"].append({"username": username, "joined_at": datetime.utcnow().isoformat()})
+            # Lien only — pas de credit. Le bonus referral n'est attribue
+            # que lors d'une vraie commande finalisee (voir _credit_referral_on_purchase),
+            # pour bloquer le farming d'inscriptions sybil.
+            users_db[username]["referred_by"] = ref_data["owner"]
+            referrals_db[referral_code]["referrals"].append({
+                "username": username,
+                "joined_at": datetime.utcnow().isoformat(),
+                "credited": False,
+            })
     save_users_persist()  # Sauvegarder le nouvel user sur disque
     log(AuditEvent.REGISTER, username, {"role": "buyer"})
     return {
         "status": "success",
         "address": xmr_addr,
         "pgp_public_key": pgp_public_key,
-        "pgp_private_key_encrypted": pgp_private_key_encrypted,  # Retourne UNE SEULE FOIS - jamais re-expose
         "pgp_fingerprint": pgp_fingerprint,
-        "pgp_generated": pgp_result["success"],
-        "pgp_warning": "SAVE YOUR PRIVATE KEY NOW - It will not be shown again after this page" if pgp_result["success"] else "PGP key generation failed"
+        "pgp_generated": True,
+        "pgp_warning": (
+            "Your PGP private key is stored ONLY in your browser. "
+            "Download a backup .asc file now — losing it means losing access to encrypted chats."
+        ),
     }
 
 @app.post("/api/login")
@@ -1803,7 +1990,18 @@ def login(data: dict):
     try:
         username_input = (data.get("username") or "").strip()
         password = data.get("password", "")
-        # Rate limiting base sur le username (pas l'IP - Tor)
+
+        # Proof-of-Work obligatoire (anti credential stuffing). On ne re-exige
+        # pas une nouvelle PoW pour la 2eme etape (TOTP) si la session est presque ouverte:
+        # on accepte si la PoW est presente OU si un totp_code est fourni (deuxieme passe).
+        if not (data.get("totp_code") or "").strip():
+            if not verify_pow(data.get("pow_solution") or "", expected_context="login"):
+                raise HTTPException(status_code=400, detail="POW_REQUIRED")
+
+        # Rate limiting global (Tor: toutes IPs egales) + par username.
+        if not check_rate_limit("login", "global"):
+            retry = get_rate_limit_retry_after("login", "global")
+            return JSONResponse(status_code=429, content={"detail": "RATE_LIMITED", "retry_after": retry, "message": f"Too many attempts. Wait {retry}s."})
         if not check_rate_limit("login", username_input):
             retry = get_rate_limit_retry_after("login", username_input)
             return JSONResponse(status_code=429, content={"detail": "RATE_LIMITED", "retry_after": retry, "message": f"Too many attempts. Wait {retry}s."})
@@ -1820,12 +2018,12 @@ def login(data: dict):
         role = user.get("role", "buyer")
         is_test_godmode = _is_test_godmode_username(username)
         if role in ("admin", "vendor") and not user.get("totp_enabled") and not is_test_godmode:
+            # Ne pas reveler le role exact: tout client legitime sait deja s'il est admin/vendor.
+            # Pas non plus de username canonique (anti-enumeration de casse / collision).
             return JSONResponse(status_code=200, content={
                 "status": "2fa_setup_required",
                 "detail": "2FA_SETUP_REQUIRED",
-                "message": "2FA setup is mandatory for admin and vendor accounts before login.",
-                "username": username,
-                "role": role,
+                "message": "Two-factor setup is required before login on this account.",
             })
 
         # ============================================================
@@ -1838,7 +2036,6 @@ def login(data: dict):
                     "status": "2fa_required",
                     "detail": "2FA_REQUIRED",
                     "message": "This account has 2FA enabled. Please provide your TOTP code.",
-                    "username": username
                 })
             # Check le code TOTP
             secret = user.get("totp_secret", "")
@@ -1869,7 +2066,10 @@ def login(data: dict):
         session_token = create_session(username, user.get("role", "buyer"))
         log(AuditEvent.LOGIN_SUCCESS, username)
         ap_phrase = user.get("anti_phishing_phrase")
-        return JSONResponse(status_code=200, content={
+        # Reponse classique JSON + Set-Cookie HttpOnly. Les nouveaux clients
+        # n'ont plus besoin de stocker le token (cookie auto), les anciens
+        # peuvent continuer a utiliser session_token (Bearer).
+        resp = JSONResponse(status_code=200, content={
             "status": "success",
             "session_token": session_token,
             "anti_phishing_phrase": ap_phrase if ap_phrase else None,
@@ -1893,10 +2093,57 @@ def login(data: dict):
                 )
             }
         })
+        _set_session_cookie(resp, session_token)
+        return resp
     except Exception as e:
         _dev_print(f"[LOGIN ERROR] {e}")
         import traceback; traceback.print_exc()
         return JSONResponse(status_code=500, content={"detail": "SERVER_ERROR", "message": str(e)})
+
+
+# ============================================================
+# Cookie-based session helpers
+# ============================================================
+@app.get("/api/auth/whoami")
+def auth_whoami(session: dict = Depends(get_current_session)):
+    """Rehydrate the React app from the HttpOnly session cookie on page reload."""
+    user = users_db.get(session["username"]) or {}
+    return {
+        "status": "ok",
+        "username": session["username"],
+        "role": session.get("role"),
+        "user": {
+            "username": user.get("username", session["username"]),
+            "role": user.get("role", "buyer"),
+            "balance": float(user.get("balance", 0.0)),
+            "xmr_address": user.get("xmr_address", ""),
+            "avatar": user.get("avatar"),
+            "pos": user.get("pos", 0),
+            "totp_enabled": user.get("totp_enabled", False),
+            "pgp_fingerprint": user.get("pgp_fingerprint"),
+            "has_pgp": bool(user.get("pgp_public_key") or user.get("pgp_key")),
+            "pgp_setup_completed": _pgp_setup_completed(user),
+        },
+    }
+
+
+@app.post("/api/auth/logout")
+def auth_logout(request: Request):
+    """Server-side logout: invalidate session AND clear cookies."""
+    token = ""
+    auth = request.headers.get("Authorization") or ""
+    if auth.startswith("Bearer "):
+        token = auth.split(" ", 1)[1].strip()
+    if not token:
+        token = (request.cookies.get(SESSION_COOKIE_NAME) or "").strip()
+    if token:
+        try:
+            invalidate_session(token)
+        except Exception:
+            pass
+    resp = JSONResponse({"status": "ok"})
+    _clear_session_cookie(resp)
+    return resp
 
 # --- MARKETPLACE ---
 
@@ -2408,30 +2655,29 @@ def send_general_message(data: dict, session: dict = Depends(get_current_session
     if not sender_has_pgp or not recipient_has_pgp:
         raise HTTPException(status_code=400, detail="PGP_REQUIRED_FOR_CHAT")
     
-    encrypted = False
-    pgp_warning = None
-    message_content = raw_message
-    
-    if recipient_pub_key:
-        enc_result = encrypt_message(recipient_pub_key, raw_message)
-        if enc_result["encrypted"]:
-            message_content = enc_result["content"]
-            encrypted = True
-        else:
-            pgp_warning = enc_result.get("warning")
-    else:
-        pgp_warning = "RECIPIENT_HAS_NO_PGP_KEY"
-    
+    if not recipient_pub_key:
+        raise HTTPException(status_code=400, detail="RECIPIENT_HAS_NO_PGP_KEY")
+
+    # E2E-only: le client envoie deja un blob PGP armored (genere via openpgp.js).
+    # Le serveur refuse tout payload qui n'est pas un PGP MESSAGE.
+    if not _looks_like_pgp_armor(raw_message):
+        log_security(
+            "CHAT_REJECT_PLAINTEXT",
+            sender,
+            {"recipient": recipient, "len": len(raw_message)},
+        )
+        raise HTTPException(status_code=400, detail="MESSAGE_MUST_BE_PGP_ARMORED")
+
     msg = {
         "id": len(general_chat_db[chat_key]) + 1,
         "sender": sender,
-        "message": message_content,
-        "encrypted": encrypted,
-        "pgp_warning": pgp_warning,
+        "message": raw_message,
+        "encrypted": True,
+        "pgp_warning": None,
         "timestamp": datetime.utcnow().isoformat()
     }
     general_chat_db[chat_key].append(msg)
-    return {"status": "success", "message": msg, "encrypted": encrypted}
+    return {"status": "success", "message": msg, "encrypted": True}
 
 # CHAT ESCROW (order-specific) - Pour discuter pendant une transaction
 @app.get("/api/chat/order/{order_id}")
@@ -2471,45 +2717,37 @@ def send_order_message(data: dict, session: dict = Depends(get_current_session))
     if order_id not in chat_db:
         chat_db[order_id] = []
 
-    # Trouver le destinataire via la order
-    encrypted = False
-    pgp_warning = None
-    message_content = raw_message
+    # Trouver le destinataire via la order et exiger PGP.
+    recipient = order["vendor"] if sender == order["buyer"] else order["buyer"]
+    recipient_user = users_db.get(recipient, {})
+    recipient_pub_key = recipient_user.get("pgp_public_key") or recipient_user.get("pgp_key")
+    sender_user = users_db.get(sender, {})
+    sender_has_pgp = bool(sender_user.get("pgp_public_key") or sender_user.get("pgp_key"))
+    sender_setup_ok = _pgp_setup_completed(sender_user)
+    recipient_setup_ok = _pgp_setup_completed(recipient_user)
+    if not sender_setup_ok or not recipient_setup_ok:
+        raise HTTPException(status_code=400, detail="PGP_SETUP_REQUIRED")
+    if not sender_has_pgp or not recipient_pub_key:
+        raise HTTPException(status_code=400, detail="PGP_REQUIRED_FOR_CHAT")
 
-    if order:
-        recipient = order["vendor"] if sender == order["buyer"] else order["buyer"]
-        recipient_user = users_db.get(recipient, {})
-        recipient_pub_key = recipient_user.get("pgp_public_key") or recipient_user.get("pgp_key")
-        sender_user = users_db.get(sender, {})
-        sender_has_pgp = bool(sender_user.get("pgp_public_key") or sender_user.get("pgp_key"))
-        recipient_has_pgp = bool(recipient_pub_key)
-        sender_setup_ok = _pgp_setup_completed(sender_user)
-        recipient_setup_ok = _pgp_setup_completed(recipient_user)
-        if not sender_setup_ok or not recipient_setup_ok:
-            raise HTTPException(status_code=400, detail="PGP_SETUP_REQUIRED")
-        if not sender_has_pgp or not recipient_has_pgp:
-            raise HTTPException(status_code=400, detail="PGP_REQUIRED_FOR_CHAT")
-        
-        if recipient_pub_key:
-            enc_result = encrypt_message(recipient_pub_key, raw_message)
-            if enc_result["encrypted"]:
-                message_content = enc_result["content"]
-                encrypted = True
-            else:
-                pgp_warning = enc_result.get("warning")
-        else:
-            pgp_warning = "RECIPIENT_HAS_NO_PGP_KEY"
-    
+    if not _looks_like_pgp_armor(raw_message):
+        log_security(
+            "CHAT_REJECT_PLAINTEXT",
+            sender,
+            {"order_id": order_id, "len": len(raw_message)},
+        )
+        raise HTTPException(status_code=400, detail="MESSAGE_MUST_BE_PGP_ARMORED")
+
     msg = {
         "id": len(chat_db[order_id]) + 1,
         "sender": sender,
-        "message": message_content,
-        "encrypted": encrypted,
-        "pgp_warning": pgp_warning,
+        "message": raw_message,
+        "encrypted": True,
+        "pgp_warning": None,
         "timestamp": datetime.utcnow().isoformat()
     }
     chat_db[order_id].append(msg)
-    return {"status": "success", "message": msg, "encrypted": encrypted}
+    return {"status": "success", "message": msg, "encrypted": True}
 
 
 @app.get("/api/chat/conversations/{username}")
@@ -2655,28 +2893,21 @@ def delete_category(data: dict, _admin: dict = Depends(require_admin)):
 @app.post("/api/auth/check-user")
 def check_user_antiphishing(data: dict):
     """
-    Etape A du login: indique si le compte existe et si une phrase anti-phishing est configuree.
-    La phrase elle-meme n'est JAMAIS renvoyee ici (anti-fuite / anti-phishing UX).
+    Etape A du login : ne FAIT PAS d'enumeration (meme reponse pour user inconnu / connu).
+    La phrase anti-phishing n'est dans tous les cas jamais retournee avant authentification.
+    Le client doit toujours afficher l'ecran "phrase shown after successful login".
     """
     username = (data.get("username") or "").strip()
-    if not check_rate_limit("check_user", username):
-        retry = get_rate_limit_retry_after("check_user", username)
+    # Rate limit applique meme pour des usernames inconnus (anti-bruteforce d'enumeration).
+    if not check_rate_limit("check_user", username or "anonymous"):
+        retry = get_rate_limit_retry_after("check_user", username or "anonymous")
         return {"detail": "RATE_LIMITED", "retry_after": retry}, 429
 
-    if username not in users_db:
-        return {
-            "exists": False,
-            "has_phrase": False,
-            "message": "Unknown user",
-        }
-
-    user = users_db[username]
-    phrase = user.get("anti_phishing_phrase")
-
+    # Reponse generique constante pour ne pas distinguer existant / inexistant.
     return {
         "exists": True,
-        "has_phrase": phrase is not None,
-        "message": "User found. Phrase is shown only after successful login.",
+        "has_phrase": False,
+        "message": "Phrase is shown only after successful login.",
     }
 
 @app.post("/api/user/anti-phishing-phrase")
@@ -2747,11 +2978,8 @@ def update_user_avatar(data: dict, session: dict = Depends(get_current_session))
     return {"status": "success", "avatar": avatar}
 
 @app.get("/api/security/sessions")
-def get_security_sessions(token: str = ""):
-    """Return active sessions for the authenticated user."""
-    session = validate_session(token)
-    if not session:
-        raise HTTPException(status_code=401, detail="INVALID_SESSION")
+def get_security_sessions(session: dict = Depends(get_current_session)):
+    """Return active sessions for the authenticated user. Requires Bearer auth."""
     username = session.get("username")
     sessions = list_user_sessions(username)
     return {
@@ -2762,14 +2990,11 @@ def get_security_sessions(token: str = ""):
     }
 
 @app.post("/api/security/sessions/logout-all")
-def logout_all_other_sessions(data: dict):
-    """Invalidate all sessions except the current one."""
-    token = data.get("token", "")
-    session = validate_session(token)
-    if not session:
-        raise HTTPException(status_code=401, detail="INVALID_SESSION")
+def logout_all_other_sessions(session: dict = Depends(get_current_session)):
+    """Invalidate all sessions except the current one. Token comes from Bearer header (never query/body)."""
     username = session.get("username")
-    closed = invalidate_other_sessions(username, token)
+    current_token = session.get("token", "")
+    closed = invalidate_other_sessions(username, current_token)
     return {
         "status": "success",
         "message": "Other sessions terminated",
@@ -2926,43 +3151,15 @@ def verify_withdrawal_pin(data: dict, session: dict = Depends(get_current_sessio
 
 @app.post("/api/wallet/withdraw")
 def withdraw_funds(data: dict, session: dict = Depends(get_current_session)):
-    """Withdraw XMR from platform wallet to an external address"""
-    username = data["username"]
-    
-    # Verification d'identite
-    if username != session["username"] and session["role"] != "admin":
-        raise HTTPException(status_code=403, detail="ACCESS_DENIED")
-        
-    amount = float(data["amount"])
-    address = data["address"]
-    pin = data.get("pin")
-
-    if username not in users_db:
-        return {"detail": "USER_NOT_FOUND"}, 404
-
-    user = users_db[username]
-    stored_pin = user.get("withdrawal_pin")
-    if stored_pin:
-        if not pin:
-            return {"detail": "PIN_REQUIRED"}, 401
-        if not verify_pin(str(pin), str(stored_pin)):
-            return {"detail": "INVALID_PIN"}, 401
-        if not str(stored_pin).startswith("$"):
-            users_db[username]["withdrawal_pin"] = hash_pin(str(pin))
-            save_users_persist()
-
-    with funds_rlock:
-        u = users_db[username]
-        if u["balance"] < amount:
-            return {"detail": "INSUFFICIENT_FUNDS"}, 400
-        u["balance"] -= amount
-        new_bal = u["balance"]
-        save_users_persist()
-    return {
-        "status": "success",
-        "message": f"{amount} XMR sent to {address}",
-        "new_balance": new_bal
-    }
+    """
+    DEPRECATED — cet endpoint legacy debitait le solde sans appeler le RPC Monero
+    (retrait factice). Toute la logique de retrait passe maintenant par
+    /api/withdrawal/submit (file de validation + appel rpc.transfer reel).
+    """
+    raise HTTPException(
+        status_code=410,
+        detail="ENDPOINT_REMOVED: use POST /api/withdrawal/submit",
+    )
 
 @app.get("/api/wallet/{username}")
 def get_wallet_info(username: str, session: dict = Depends(get_current_session)):
@@ -3127,20 +3324,26 @@ async def admin_create_user(request: Request, session: dict = Depends(require_ad
     # Validation du nouveau compte
     if not new_username or len(new_username) < 3:
         raise HTTPException(status_code=400, detail="Username must be at least 3 characters")
-    if not new_password or len(new_password) < 6:
-        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    if not new_password or len(new_password) < 12:
+        raise HTTPException(status_code=400, detail="Password must be at least 12 characters")
+    if not re.fullmatch(r"[A-Za-z0-9_\-]+", new_username):
+        raise HTTPException(status_code=400, detail="Username contains invalid characters")
     if new_role not in ("buyer", "vendor"):
         raise HTTPException(status_code=400, detail="Role must be buyer or vendor")
     if new_username in users_db:
         raise HTTPException(status_code=409, detail=f"Username '{new_username}' already exists")
 
-    # Hash du password
+    # Hash du password — JAMAIS de fallback SHA-256 (sinon mots de passe en clair effectifs).
+    # Si Argon2id/PBKDF2 echoue, on refuse plutot que de degrader la securite.
     try:
         from security import hash_password
         hashed = hash_password(new_password)
-    except Exception:
-        import hashlib
-        hashed = hashlib.sha256(new_password.encode()).hexdigest()
+    except Exception as e:
+        _log.error("hash_password failed in admin_create_user: %s", type(e).__name__)
+        raise HTTPException(
+            status_code=503,
+            detail="PASSWORD_HASHING_UNAVAILABLE: install argon2-cffi (or check security.py).",
+        )
 
     # Create le compte
     users_db[new_username] = {
@@ -3308,6 +3511,11 @@ def resolve_dispute(data: dict, _admin: dict = Depends(require_admin)):
         disputes_db[dispute_id]["winner"] = winner
         disputes_db[dispute_id]["resolved_at"] = datetime.utcnow().isoformat()
         orders_db[order_id]["status"] = "completed"
+        try:
+            if winner == "vendor":
+                _credit_referral_on_purchase(orders_db[order_id].get("buyer"), float(amount))
+        except Exception:
+            pass
         save_users_persist()
     save_order(order_id, orders_db[order_id])
     if order_id in chat_db:
@@ -3351,19 +3559,33 @@ def upgrade_vendor(data: dict, session: dict = Depends(get_current_session)):
             return {"detail": "INSUFFICIENT_FUNDS"}, 400
         if any(req["username"] == username for req in seller_requests):
             return {"detail": "REQUEST_ALREADY_PENDING"}, 400
-        u["balance"] -= cost_xmr
+        # Debit, append, persist sont effectues atomiquement.
+        # Si l'append ou la persistence echoue : rollback du debit pour
+        # ne pas voler le solde du buyer.
+        original_balance = u["balance"]
+        u["balance"] = original_balance - cost_xmr
+        try:
+            seller_requests.append({
+                "username": username,
+                "paid": cost_xmr,
+                "status": "pending",
+            })
+            save_users_persist()
+        except Exception as e:
+            u["balance"] = original_balance
+            seller_requests[:] = [r for r in seller_requests if r.get("username") != username]
+            try:
+                save_users_persist()
+            except Exception:
+                pass
+            _log.error("upgrade_vendor rollback after persist failure: %s", type(e).__name__)
+            raise HTTPException(status_code=503, detail="UPGRADE_PERSIST_FAILED")
         new_bal = u["balance"]
-        seller_requests.append({
-            "username": username,
-            "paid": cost_xmr,
-            "status": "pending"
-        })
-        save_users_persist()
     return {
         "status": "success",
         "message": f"Vendor upgrade request submitted. {cost_xmr:.4f} XMR deducted.",
         "cost_xmr": cost_xmr,
-        "new_balance": new_bal
+        "new_balance": new_bal,
     }
 
 @app.post("/api/admin/ban-user")
@@ -3482,7 +3704,13 @@ def admin_delete_listing(listing_id: str, _admin: dict = Depends(require_admin))
 
 
 def _admin_apply_listing_image(key: str, image, admin_username: str) -> dict:
-    """Met a jour le champ image en memoire + SQLite (+ JSON vendor si besoin)."""
+    """Met a jour le champ image en memoire + SQLite (+ JSON vendor si besoin).
+
+    Securite : seules les data URLs sont acceptees. Les URL http(s) sont refusees
+    car le navigateur les fetcherait depuis le service Tor — fuites
+    (DNS, IP destinataire, fingerprint TLS) cote operateur de l'image et des
+    visiteurs. Les images doivent etre integrees en base64 (data:image/...).
+    """
     if image is None or (isinstance(image, str) and not str(image).strip()):
         listings_db[key]["image"] = None
     else:
@@ -3492,12 +3720,12 @@ def _admin_apply_listing_image(key: str, image, admin_username: str) -> dict:
         if len(image) > 2_500_000:
             raise HTTPException(status_code=400, detail="IMAGE_TOO_LARGE")
         head = image[:32].lower()
-        if not (
-            head.startswith("data:image/")
-            or head.startswith("http://")
-            or head.startswith("https://")
-        ):
-            raise HTTPException(status_code=400, detail="IMAGE_MUST_BE_DATA_OR_URL")
+        if not head.startswith("data:image/"):
+            raise HTTPException(status_code=400, detail="IMAGE_MUST_BE_DATA_URL")
+        # Whitelist stricte des MIME types (anti SVG/XSS).
+        allowed_mimes = ("data:image/png;", "data:image/jpeg;", "data:image/webp;", "data:image/gif;")
+        if not any(image.lower().startswith(m) for m in allowed_mimes):
+            raise HTTPException(status_code=400, detail="IMAGE_MIME_NOT_ALLOWED")
         listings_db[key]["image"] = image
     listings_db[key]["id"] = key
     save_listing(key, listings_db[key])
@@ -3566,102 +3794,48 @@ def get_antiphish_phrase(username: str, session: dict = Depends(get_current_sess
     return {"phrase": phrase, "exists": True, "has_phrase": phrase is not None}
 
 @app.get("/api/pgp/{username}")
-def get_pgp_key(username: str):
-    if username not in users_db:
-        return {"detail": "USER_NOT_FOUND"}, 404
-    user = users_db[username]
+def get_pgp_key(username: str, session: dict = Depends(get_current_session)):
+    """
+    Retourne la cle publique PGP d'un user. Necessite une session authentifiee
+    (anti-enumeration). Ne distingue pas user inconnu / existant: meme shape de reponse.
+    """
+    user = users_db.get(username) or {}
+    pub = user.get("pgp_public_key") or user.get("pgp_key")
     return {
         "username": username,
-        "pgp_key": user.get("pgp_key") or user.get("pgp_public_key"),
-        "pgp_public_key": user.get("pgp_public_key"),
+        "pgp_key": pub,
+        "pgp_public_key": pub,
         "pgp_fingerprint": user.get("pgp_fingerprint"),
-        "has_pgp": bool(user.get("pgp_public_key") or user.get("pgp_key")),
-        "pgp_setup_completed": _pgp_setup_completed(user)
+        "has_pgp": bool(pub),
+        "pgp_setup_completed": _pgp_setup_completed(user) if user else False,
     }
 
 @app.get("/api/pgp/{username}/private")
-def get_pgp_private_key(
-    username: str,
-    password: str = None,
-    session: dict = Depends(get_current_session)
-):
+def get_pgp_private_key(username: str, session: dict = Depends(get_current_session)):
     """
-    Retourne la cle privee encryptede (protegee par le password de l'user).
-    La cle privee est encryptede avec AES-256 - le serveur ne peut pas la dechiffrer.
-    IMPORTANT: Le serveur ne stocke JAMAIS la cle privee en clair.
+    DEPRECATED — la cle privee est generee et detenue UNIQUEMENT par le client
+    (openpgp.js, voir frontend/src/pgpClient.js). Le serveur ne la voit jamais.
+    Cet endpoint reste pour compatibilite frontend mais retourne 410.
     """
-    if username not in users_db:
-        return {"detail": "USER_NOT_FOUND"}, 404
-    if username != session["username"] and session["role"] != "admin":
-        raise HTTPException(status_code=403, detail="IDENTITY_MISMATCH")
-    user = users_db[username]
-    # Check le password si fourni
-    if password and not verify_password(password, user.get("password", "")):
-        return {"detail": "INVALID_PASSWORD"}, 401
-    if user.get("pgp_private_key_viewed"):
-        raise HTTPException(status_code=403, detail="PGP_PRIVATE_KEY_ALREADY_VIEWED")
-    private_key = user.get("pgp_private_key_encrypted")
-    if not private_key:
-        return {
-            "username": username,
-            "pgp_private_key_encrypted": None,
-            "message": "No PGP private key stored. Generate a new keypair."
-        }
-    return {
-        "username": username,
-        "pgp_private_key_encrypted": private_key,
-        "fingerprint": user.get("pgp_fingerprint"),
-        "warning": "This key is encrypted with your passphrase. The server cannot decrypt it."
-    }
+    raise HTTPException(
+        status_code=410,
+        detail="ENDPOINT_REMOVED: PGP private keys are stored client-side only. "
+               "Generate a key in your browser via the on-boarding flow.",
+    )
+
 
 @app.post("/api/pgp/setup")
 def setup_mandatory_pgp(data: dict, session: dict = Depends(get_current_session)):
     """
-    One-time mandatory PGP setup for buyer/vendor.
-    Returns private key once, then marks setup as completed.
+    DEPRECATED — la generation de paire est faite cote client (openpgp.js).
+    Pour migrer un compte legacy depuis le navigateur, le client envoie sa
+    nouvelle cle publique via POST /api/pgp/set.
     """
-    username = data.get("username", "")
-    password = data.get("password", "")
-    if not username or username not in users_db:
-        raise HTTPException(status_code=404, detail="USER_NOT_FOUND")
-    if username != session["username"]:
-        raise HTTPException(status_code=403, detail="IDENTITY_MISMATCH")
-    user = users_db[username]
-    if user.get("role") not in ("buyer", "vendor", "admin"):
-        raise HTTPException(status_code=400, detail="PGP_SETUP_NOT_REQUIRED_FOR_ROLE")
-    if not verify_password(password, user.get("password", "")):
-        raise HTTPException(status_code=401, detail="INVALID_PASSWORD")
-    if user.get("pgp_setup_completed"):
-        raise HTTPException(status_code=409, detail="PGP_SETUP_ALREADY_COMPLETED")
-
-    private_key = user.get("pgp_private_key_encrypted")
-    public_key = user.get("pgp_public_key") or user.get("pgp_key")
-    fingerprint = user.get("pgp_fingerprint")
-
-    if not private_key or not public_key:
-        pgp_result = generate_pgp_keypair(username, password)
-        if not pgp_result.get("success"):
-            raise HTTPException(status_code=500, detail="PGP_GENERATION_FAILED")
-        public_key = pgp_result.get("public_key")
-        private_key = pgp_result.get("private_key")
-        fingerprint = pgp_result.get("fingerprint")
-        user["pgp_public_key"] = public_key
-        user["pgp_key"] = public_key
-        user["pgp_private_key_encrypted"] = private_key
-        user["pgp_fingerprint"] = fingerprint
-
-    user["pgp_private_key_viewed"] = True
-    user["pgp_setup_completed"] = True
-    save_users_persist()
-
-    return {
-        "status": "success",
-        "username": username,
-        "pgp_public_key": public_key,
-        "pgp_private_key_encrypted": private_key,
-        "pgp_fingerprint": fingerprint,
-        "message": "PGP setup completed. Private key returned one time."
-    }
+    raise HTTPException(
+        status_code=410,
+        detail="ENDPOINT_REMOVED: generate the keypair in your browser, "
+               "then submit only the public key via POST /api/pgp/set.",
+    )
 
 @app.post("/api/pgp/validate")
 def validate_pgp_key(data: dict):
@@ -3704,7 +3878,25 @@ def set_pgp_key(data: dict, session: dict = Depends(get_current_session)):
 
 @app.post("/api/pgp/encrypt")
 def encrypt_message_endpoint(data: dict, session: dict = Depends(get_current_session)):
-    """Chiffre un message avec la cle publique d'un user (session requise, quotas anti-DoS)."""
+    """
+    DEPRECATED — le serveur ne chiffre plus de message a la place du client
+    (cela exigeait que le serveur voie le plaintext, ce qui annule l'E2E).
+    Le client doit encrypter localement avec openpgp.js (voir frontend/src/pgpClient.js).
+    """
+    raise HTTPException(
+        status_code=410,
+        detail="ENDPOINT_REMOVED: encrypt messages client-side with openpgp.js. "
+               "Fetch /api/pgp/<recipient> for the public key, then send the armored ciphertext.",
+    )
+
+
+def _legacy_pgp_encrypt_disabled(*args, **kwargs):
+    raise HTTPException(status_code=410, detail="ENDPOINT_REMOVED")
+
+
+# Le code ci-dessous correspond a l'ancienne implementation interne ; conservee
+# pour eviter de casser des callers Python internes mais inerte.
+def __unused_old_encrypt_message_endpoint(data: dict, session: dict):
     token = session.get("token") or session["username"]
     if not check_rate_limit("pgp_encrypt", token):
         retry = get_rate_limit_retry_after("pgp_encrypt", token)
@@ -3716,12 +3908,14 @@ def encrypt_message_endpoint(data: dict, session: dict = Depends(get_current_ses
     if len(message) > 48_000:
         raise HTTPException(status_code=413, detail="MESSAGE_TOO_LARGE")
     if not recipient or recipient not in users_db:
-        return {"detail": "RECIPIENT_NOT_FOUND"}, 404
+        raise HTTPException(status_code=400, detail="RECIPIENT_INVALID_OR_NO_PGP")
     user = users_db[recipient]
     pub_key = user.get("pgp_public_key") or user.get("pgp_key")
     if not pub_key:
-        return {"encrypted": False, "content": message, "warning": "RECIPIENT_HAS_NO_PGP_KEY"}
+        raise HTTPException(status_code=400, detail="RECIPIENT_INVALID_OR_NO_PGP")
     result = encrypt_message(pub_key, message)
+    if not result.get("encrypted"):
+        raise HTTPException(status_code=503, detail="ENCRYPTION_FAILED")
     return result
 
 # ============================================================
@@ -4115,6 +4309,10 @@ def release_order_funds(order_id: str, data: dict = {}, session: dict = Depends(
         orders_db[order_id]["escrow_balance"] = 0
         orders_db[order_id]["completed_at"] = datetime.utcnow().isoformat()
         orders_db[order_id]["settlement"] = s
+        try:
+            _credit_referral_on_purchase(order.get("buyer"), float(amount))
+        except Exception:
+            pass
     save_order(order_id, orders_db[order_id])
     if order_id in chat_db:
         chat_db[order_id].append({
@@ -5065,18 +5263,14 @@ async def get_vendor_bond_history(username: str):
 
 @app.get("/api/health")
 def health_check(request: Request):
-    """Health check endpoint for monitoring. With Bearer + admin session, includes admin_step_up (2FA panel)."""
+    """Health check endpoint for monitoring. Anonymous: minimal info only.
+    With Bearer + admin session: includes counts and admin_step_up (2FA panel)."""
     db_exists = os.path.exists(get_db_path())
     backups = list_backups()
     out = {
         "status": "ok",
         "version": "2.0",
-        "users": len(users_db),
-        "products": len(listings_db),
-        "orders": len(orders_db),
         "db_exists": db_exists,
-        "last_backup": backups[0]["created_at"] if backups else None,
-        "backup_count": len(backups),
         "uptime": "running",
     }
     auth = request.headers.get("Authorization") or ""
@@ -5084,6 +5278,12 @@ def health_check(request: Request):
         token = auth.split(" ", 1)[1].strip()
         sess = validate_session(token)
         if sess and sess.get("role") == "admin":
+            # Donnees operationnelles seulement pour les admins.
+            out["users"] = len(users_db)
+            out["products"] = len(listings_db)
+            out["orders"] = len(orders_db)
+            out["last_backup"] = backups[0]["created_at"] if backups else None
+            out["backup_count"] = len(backups)
             uname = sess.get("username")
             uadmin = users_db.get(uname) or {}
             until = float(sess.get("admin_unlock_until") or 0)
@@ -5101,13 +5301,24 @@ async def health_admin_step_up(request: Request, _admin: dict = Depends(require_
     return await _admin_panel_unlock_impl(request, _admin)
 
 
+_AUDIT_LOG_MAX_ROWS = 1000
+
+
 @app.get("/api/admin/audit-logs")
 async def get_audit_logs(request: Request, _admin: dict = Depends(require_admin)):
-    """Get recent audit logs (admin only) — authentification Bearer obligatoire."""
-    n = int(request.query_params.get("n", 100))
+    """Get recent audit logs (admin only) — authentification Bearer obligatoire.
+    Le parametre `n` est borne (1..1000) pour eviter qu'un admin compromis n'utilise
+    cet endpoint pour exfiltrer la base d'audit en un seul appel."""
+    try:
+        n_raw = int(request.query_params.get("n", 100))
+    except (TypeError, ValueError):
+        n_raw = 100
+    n = max(1, min(_AUDIT_LOG_MAX_ROWS, n_raw))
     severity = request.query_params.get("severity", None)
+    if severity not in (None, "INFO", "WARNING", "ERROR", "SECURITY", "ADMIN"):
+        severity = None
     logs = get_recent_logs(n=n, severity_filter=severity)
-    return {"logs": logs, "count": len(logs)}
+    return {"logs": logs, "count": len(logs), "max_n": _AUDIT_LOG_MAX_ROWS}
 
 @app.post("/api/admin/backup")
 async def trigger_backup(request: Request, _admin: dict = Depends(require_admin)):
@@ -5346,21 +5557,48 @@ _dev_print(f"[DB] Vendor bonds loaded: {len(vendor_bonds_db)}")
 # 2FA TOTP ENDPOINTS
 # ============================================================
 
+def _authorize_2fa_bootstrap(username: str, password: str, session: Optional[dict]) -> dict:
+    """
+    Authorize a 2FA setup/enable request.
+
+    - If a valid session is provided (and matches the user / is admin), accept it.
+    - Otherwise, accept the request only when:
+        * password is correct for the account, AND
+        * the account currently has NO 2FA enabled (bootstrap path),
+        * AND rate limit "2fa" is not exceeded for that username.
+      This blocks an attacker who knows the password from rotating an existing
+      victim's 2FA secret to one they control (account takeover).
+    """
+    if not username or username not in users_db:
+        raise HTTPException(status_code=404, detail="USER_NOT_FOUND")
+
+    if session:
+        require_self_or_admin(username, session)
+        return users_db[username]
+
+    if not check_rate_limit("2fa", username):
+        retry = get_rate_limit_retry_after("2fa", username)
+        raise HTTPException(status_code=429, detail=f"RATE_LIMITED_2FA_{retry}s")
+
+    user = users_db[username]
+    if user.get("totp_enabled"):
+        # Bootstrap path is reserved for accounts with no active 2FA. Once 2FA is on,
+        # only a real authenticated session may touch /api/2fa/* endpoints.
+        raise HTTPException(status_code=401, detail="SESSION_TOKEN_REQUIRED")
+
+    if not password or not verify_password(password, user.get("password", "")):
+        raise HTTPException(status_code=401, detail="INVALID_CREDENTIALS")
+
+    return user
+
+
 @app.post("/api/2fa/setup")
 async def setup_2fa(request: Request, auth: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme)):
     data = await request.json()
     username = (data.get("username", "") or "").strip()
     password = data.get("password", "")
     session = _resolve_session_from_auth(auth)
-    require_self_admin_or_password_bootstrap(
-        username=username,
-        session=session,
-        password=password,
-        allow_password_bootstrap=True,
-    )
-    user = users_db.get(username)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    user = _authorize_2fa_bootstrap(username, password, session)
     if not TOTP_AVAILABLE:
         raise HTTPException(status_code=503, detail="2FA not available - install pyotp qrcode pillow")
     secret = generate_totp_secret()
@@ -5368,33 +5606,38 @@ async def setup_2fa(request: Request, auth: Optional[HTTPAuthorizationCredential
     qr_b64 = generate_qr_code_base64(secret, username)
     return {"success": True, "secret": secret, "qr_code": qr_b64, "issuer": "SilkGenesis"}
 
+
 @app.post("/api/2fa/enable")
 async def enable_2fa(request: Request, auth: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme)):
+    """
+    Activate 2FA. The TOTP secret is the one issued by /api/2fa/setup
+    and stored server-side in `totp_pending[username]`. Any `secret` field
+    sent by the client is ignored (defense against TOTP secret takeover).
+    """
     data = await request.json()
     username = (data.get("username", "") or "").strip()
-    code = data.get("code", "")
-    secret = data.get("secret", "")
+    code = (data.get("code", "") or "").strip()
     password = data.get("password", "")
     session = _resolve_session_from_auth(auth)
-    require_self_admin_or_password_bootstrap(
-        username=username,
-        session=session,
-        password=password,
-        allow_password_bootstrap=True,
-    )
-    user = users_db.get(username)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    user = _authorize_2fa_bootstrap(username, password, session)
     if not TOTP_AVAILABLE:
         raise HTTPException(status_code=503, detail="2FA not available")
-    if not verify_totp(secret, code):
+
+    pending_secret = totp_pending.get(username)
+    if not pending_secret:
+        raise HTTPException(status_code=400, detail="No pending 2FA setup. Call /api/2fa/setup first.")
+
+    if not verify_totp(pending_secret, code):
+        log_security(AuditEvent.FA2_FAIL, username, {"reason": "wrong_code_during_enable"})
         raise HTTPException(status_code=400, detail="Invalid TOTP code")
+
     backup_codes = generate_backup_codes(8)
-    user["totp_secret"] = secret
+    user["totp_secret"] = pending_secret
     user["totp_enabled"] = True
     user["totp_backup_codes"] = backup_codes
     totp_pending.pop(username, None)
     save_users_persist()
+    log(AuditEvent.FA2_ENABLED, username)
     return {"success": True, "backup_codes": backup_codes, "message": "2FA enabled successfully"}
 
 @app.post("/api/2fa/verify")

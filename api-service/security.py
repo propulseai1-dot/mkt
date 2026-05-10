@@ -23,12 +23,32 @@ from silk_paths import persist_base_dir
 
 # ============================================================
 # PEPPER - Extra secret mixed into all hashes
-# Set SILKGENESIS_PEPPER env var in production
+# Set SILKGENESIS_PEPPER env var. Required in production, and
+# also auto-generated per-process in dev (ephemeral) so that a
+# fixed default value can never become known to an attacker.
+# Note: generating a random pepper invalidates existing hashes
+# at restart, which is intentional in dev (use docker volumes
+# / persistent .env to keep the same pepper across restarts).
 # ============================================================
-PEPPER = os.environ.get("SILKGENESIS_PEPPER", "SilkGenesis_Default_Pepper_2026_Change_In_Production")
 IS_PRODUCTION = os.environ.get("SILKGENESIS_ENV", "development").lower() == "production"
-if IS_PRODUCTION and not os.environ.get("SILKGENESIS_PEPPER"):
-    raise RuntimeError("SILKGENESIS_PEPPER is required in production.")
+_env_pepper = os.environ.get("SILKGENESIS_PEPPER", "").strip()
+if IS_PRODUCTION:
+    if not _env_pepper:
+        raise RuntimeError(
+            "SILKGENESIS_PEPPER is required in production "
+            "(generate a 64-hex random value and set it in the environment)."
+        )
+    if len(_env_pepper) < 32:
+        raise RuntimeError("SILKGENESIS_PEPPER must be at least 32 chars in production.")
+    PEPPER = _env_pepper
+else:
+    if _env_pepper:
+        PEPPER = _env_pepper
+    else:
+        # Pepper ephemere par process: empeche tout attaquant offline d'utiliser
+        # une valeur connue, mais invalide les hashes a chaque redemarrage.
+        PEPPER = secrets.token_hex(32)
+        print("[SECURITY] No SILKGENESIS_PEPPER set; generated ephemeral dev pepper.")
 
 # ============================================================
 # ARGON2ID - Primary password hashing (OWASP 2026)
@@ -505,12 +525,36 @@ def _dms_monitor():
                 os._exit(1)
             elif _dms_action == "wipe":
                 print("[DMS] Initiating data wipe...")
-                # Wipe sensitive files
-                for f in ["silkgenesis.db", "users_persist.json", "vendor_listings.json"]:
-                    path = os.path.join(os.path.dirname(__file__), f)
-                    if os.path.exists(path):
-                        os.remove(path)
-                        print(f"[DMS] Wiped: {f}")
+                # Best-effort secure delete of all sensitive persistence files.
+                # (Production: rely on FDE + key destruction, not file-level shred.)
+                try:
+                    from secure_storage import shred_path
+                except Exception:
+                    shred_path = None  # type: ignore
+                base = os.path.dirname(__file__)
+                data_dir = os.environ.get("SILKGENESIS_DATA_DIR", "").strip() or base
+                candidates = [
+                    "silkgenesis.db",
+                    "silkgenesis_data.db",
+                    "silkgenesis_data.db-wal",
+                    "silkgenesis_data.db-shm",
+                    "multisig.db",
+                    "users_persist.json",
+                    "vendor_listings.json",
+                    "warrant_canary.json",
+                ]
+                for fn in candidates:
+                    for parent in (data_dir, base):
+                        path = os.path.join(parent, fn)
+                        if os.path.exists(path):
+                            if shred_path:
+                                shred_path(path, passes=3)
+                            else:
+                                try:
+                                    os.remove(path)
+                                except OSError:
+                                    pass
+                            print(f"[DMS] Wiped: {path}")
                 os._exit(1)
 
 threading.Thread(target=_dms_monitor, daemon=True).start()
