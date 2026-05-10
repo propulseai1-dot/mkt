@@ -725,13 +725,14 @@ referrals_db = {}  # {referral_code: {owner, uses, earnings}}
 # ============================================================
 # VENDOR LEVELS SYSTEM
 # ============================================================
+# Tiers: progression par nombre de ventes (settlement). min_xmr=0 : le palier ne bloque pas sur le volume.
 VENDOR_LEVELS = [
     {"name": "Newcomer",  "icon": "🆕", "min_sales": 0,    "min_xmr": 0,    "commission": 0.08,  "color": "#888"},
-    {"name": "Bronze",    "icon": "🥉", "min_sales": 10,   "min_xmr": 1,    "commission": 0.07,  "color": "#cd7f32"},
-    {"name": "Silver",    "icon": "🥈", "min_sales": 50,   "min_xmr": 5,    "commission": 0.06,  "color": "#c0c0c0"},
-    {"name": "Gold",      "icon": "🥇", "min_sales": 200,  "min_xmr": 20,   "commission": 0.05,  "color": "#ffd700"},
-    {"name": "Platinum",  "icon": "💎", "min_sales": 500,  "min_xmr": 50,   "commission": 0.035, "color": "#e5e4e2"},
-    {"name": "Elite",     "icon": "👑", "min_sales": 1000, "min_xmr": 100,  "commission": 0.02,  "color": "#ff6b35"},
+    {"name": "Bronze",    "icon": "🥉", "min_sales": 50,   "min_xmr": 0,    "commission": 0.07,  "color": "#cd7f32"},
+    {"name": "Silver",    "icon": "🥈", "min_sales": 100,  "min_xmr": 0,    "commission": 0.06,  "color": "#c0c0c0"},
+    {"name": "Gold",      "icon": "🥇", "min_sales": 300,  "min_xmr": 0,    "commission": 0.05,  "color": "#ffd700"},
+    {"name": "Platinum",  "icon": "💎", "min_sales": 600,  "min_xmr": 0,    "commission": 0.035, "color": "#e5e4e2"},
+    {"name": "Elite",     "icon": "👑", "min_sales": 1200, "min_xmr": 0,    "commission": 0.02,  "color": "#ff6b35"},
 ]
 
 def get_vendor_level(username):

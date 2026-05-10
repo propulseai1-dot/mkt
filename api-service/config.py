@@ -7,56 +7,67 @@ import re
 # ============================================================
 # VENDOR LEVELS & TIERED COMMISSIONS
 # ============================================================
+# Aligné sur api-service/market_server.VENDOR_LEVELS (seuils en ventes complétées)
 VENDOR_LEVELS = [
     {
         "level": 1,
-        "name": "Newbie",
+        "name": "Newcomer",
         "icon": "🆕",
         "min_sales": 0,
-        "max_sales": 10,
-        "commission_rate": 0.08,   # 8%
+        "max_sales": 49,
+        "commission_rate": 0.08,
         "color": "#888888",
-        "badge": "NEWBIE"
+        "badge": "NEWCOMER",
     },
     {
         "level": 2,
-        "name": "Trusted",
-        "icon": "✅",
-        "min_sales": 11,
-        "max_sales": 50,
-        "commission_rate": 0.06,   # 6%
-        "color": "#3b82f6",
-        "badge": "TRUSTED"
+        "name": "Bronze",
+        "icon": "🥉",
+        "min_sales": 50,
+        "max_sales": 99,
+        "commission_rate": 0.07,
+        "color": "#cd7f32",
+        "badge": "BRONZE",
     },
     {
         "level": 3,
-        "name": "Professional",
-        "icon": "⭐",
-        "min_sales": 51,
-        "max_sales": 200,
-        "commission_rate": 0.04,   # 4%
-        "color": "#f59e0b",
-        "badge": "PRO"
+        "name": "Silver",
+        "icon": "🥈",
+        "min_sales": 100,
+        "max_sales": 299,
+        "commission_rate": 0.06,
+        "color": "#c0c0c0",
+        "badge": "SILVER",
     },
     {
         "level": 4,
-        "name": "Elite",
-        "icon": "💎",
-        "min_sales": 201,
-        "max_sales": 500,
-        "commission_rate": 0.03,   # 3%
-        "color": "#8b5cf6",
-        "badge": "ELITE"
+        "name": "Gold",
+        "icon": "🥇",
+        "min_sales": 300,
+        "max_sales": 599,
+        "commission_rate": 0.05,
+        "color": "#ffd700",
+        "badge": "GOLD",
     },
     {
         "level": 5,
-        "name": "Legend",
+        "name": "Platinum",
+        "icon": "💎",
+        "min_sales": 600,
+        "max_sales": 1199,
+        "commission_rate": 0.035,
+        "color": "#e5e4e2",
+        "badge": "PLATINUM",
+    },
+    {
+        "level": 6,
+        "name": "Elite",
         "icon": "👑",
-        "min_sales": 501,
-        "max_sales": None,         # No upper limit
-        "commission_rate": 0.02,   # 2%
-        "color": "#f97316",
-        "badge": "LEGEND"
+        "min_sales": 1200,
+        "max_sales": None,
+        "commission_rate": 0.02,
+        "color": "#ff6b35",
+        "badge": "ELITE",
     },
 ]
 

@@ -229,6 +229,7 @@ def program_static_payload(vendor_levels_for_examples: List[Dict[str, Any]]) -> 
         tiers_out.append(
             {
                 "name": lvl.get("name", ""),
+                "min_sales": int(lvl.get("min_sales", 0)),
                 "commission_pct": round(rate * 100, 2),
                 "fee_on_1000_usd": round(fee_usd, 2),
                 "affiliates_on_1000_usd": round(affiliates_usd, 2),

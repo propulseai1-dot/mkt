@@ -133,9 +133,11 @@ export default function AffiliateProgramPage({ user, sessionToken, authenticated
               Earn XMR on <span className="text-amber-500">every settled sale</span>
             </h1>
             <p className="mt-3 max-w-2xl text-sm text-gray-400 leading-relaxed normal-case not-italic font-medium">
-              Up to <strong className="text-white">55%</strong> of the marketplace commission is paid to affiliates.
-              Buyer referrals pay through <strong className="text-white">3 depth levels</strong>; vendors can reward{' '}
-              <strong className="text-white">who referred them</strong>. Everything settles in{' '}
+              Marketplace fee % depends on your <strong className="text-white">vendor tier</strong> (Bronze at 50 sales,
+              Silver 100, Gold 300, Platinum 600, Elite 1200 completed sales). Up to{' '}
+              <strong className="text-white">55%</strong> of that fee is paid to affiliates.
+              Buyer referrals use <strong className="text-white">3 depth levels</strong>; vendors can reward{' '}
+              <strong className="text-white">who referred them</strong>. Payouts settle in{' '}
               <strong className="text-amber-500">XMR</strong> to your internal balance.
             </p>
           </div>
@@ -216,13 +218,14 @@ export default function AffiliateProgramPage({ user, sessionToken, authenticated
       {program?.tiers && (
         <div>
           <h2 className="text-[10px] font-black uppercase tracking-[0.35em] text-gray-600 mb-4">
-            Commission tiers · example ${program.example_nominal_sale_usd || 1000} nominal sale (USD)
+            Commission tiers (by vendor sales) · example ${program.example_nominal_sale_usd || 1000} nominal sale (USD)
           </h2>
           <div className="overflow-x-auto rounded-2xl border border-white/10">
             <table className="w-full text-left text-[11px]">
               <thead>
                 <tr className="border-b border-white/10 bg-black/40 text-[9px] uppercase tracking-widest text-gray-500">
                   <th className="px-4 py-3">Vendor tier</th>
+                  <th className="px-4 py-3">Min sales</th>
                   <th className="px-4 py-3">Market fee %</th>
                   <th className="px-4 py-3">Fee on ${program.example_nominal_sale_usd}</th>
                   <th className="px-4 py-3 text-amber-500/90">Affiliates (55%)</th>
@@ -233,6 +236,9 @@ export default function AffiliateProgramPage({ user, sessionToken, authenticated
                 {program.tiers.map((t) => (
                   <tr key={t.name} className="border-b border-white/5 hover:bg-white/[0.02]">
                     <td className="px-4 py-3 text-white font-bold">{t.name}</td>
+                    <td className="px-4 py-3 text-gray-500 font-mono">
+                      {typeof t.min_sales === 'number' ? `${t.min_sales}+` : '—'}
+                    </td>
                     <td className="px-4 py-3 text-gray-400">{t.commission_pct}%</td>
                     <td className="px-4 py-3 font-mono text-gray-300">${t.fee_on_1000_usd}</td>
                     <td className="px-4 py-3 font-mono text-amber-500">${t.affiliates_on_1000_usd}</td>
@@ -243,7 +249,8 @@ export default function AffiliateProgramPage({ user, sessionToken, authenticated
             </table>
           </div>
           <p className="mt-2 text-[9px] text-gray-600 normal-case not-italic">
-            Illustrative USD amounts; live payouts are calculated from actual escrow amounts and vendor tier in XMR.
+            Tiers unlock by completed sales on settled escrow (same rules as the vendor dashboard). Illustrative USD
+            amounts; live payouts use actual escrow in XMR.
           </p>
         </div>
       )}
