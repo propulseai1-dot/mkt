@@ -24,10 +24,10 @@ _VERBOSE_LOGS = (not IS_PRODUCTION) or (
 )
 
 
-def _dev__dev_print(*args, **kwargs) -> None:
+def _dev_print(*args, **kwargs) -> None:
     if not _VERBOSE_LOGS:
         return
-    builtins._dev_print(*args, **kwargs, flush=True)
+    builtins.print(*args, **kwargs, flush=True)
 
 
 # ============================================================
