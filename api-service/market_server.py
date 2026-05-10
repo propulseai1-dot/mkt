@@ -117,9 +117,18 @@ TEST_GODMODE_PASSWORD = os.environ.get("SILKGENESIS_TEST_GODMODE_PASSWORD", "god
 FOUNDER_VENDOR_BADGE_LIMIT = 20
 # Noms reserves a l'inscription (pas de squatting si le compte n'existe pas encore)
 REGISTER_RESERVED_USERNAMES = frozenset({
-    "admin", "administrator", "root", "system", "support", "moderator",
+    "admin", "administrator", "root", "rootadmin", "system", "support", "moderator",
     "silksupport", "silkgenesis", "null", "api", "www", "mail", "postmaster",
 })
+
+
+def _register_username_reserved(username: str) -> bool:
+    """True si le pseudo est reserve (liste fixe + compte root admin configurable)."""
+    u = (username or "").strip().lower()
+    if u in REGISTER_RESERVED_USERNAMES:
+        return True
+    root = (os.environ.get("SILKGENESIS_ROOT_ADMIN_USERNAME") or "rootadmin").strip().lower()
+    return bool(root) and u == root
 DEMO_VENDOR_USERNAMES = [
     "DarkPharmacy",
     "CryptoKing",
@@ -1379,6 +1388,49 @@ def init_demo_data():
 
     # Reviews: vides au demarrage - seules les vraies reviews des buyers seront ajoutees
 
+
+def _ensure_root_admin_account():
+    """
+    Compte administrateur racine du site : cree au premier boot si absent.
+    Non supprime par le cleanup legacy (admin / admin1).
+    Mot de passe : SILKGENESIS_ROOT_ADMIN_PASSWORD ou SILKGENESIS_BOOTSTRAP_ADMIN_PASSWORD.
+    """
+    uname = (os.environ.get("SILKGENESIS_ROOT_ADMIN_USERNAME") or "rootadmin").strip().lower()
+    if not re.fullmatch(r"[a-z0-9_\-]+", uname) or len(uname) < 3 or len(uname) > 64:
+        uname = "rootadmin"
+    if uname in ("admin", "admin1"):
+        uname = "rootadmin"
+    pw = (
+        os.environ.get("SILKGENESIS_ROOT_ADMIN_PASSWORD")
+        or os.environ.get("SILKGENESIS_BOOTSTRAP_ADMIN_PASSWORD")
+        or ""
+    ).strip()
+    if uname in users_db:
+        if users_db[uname].get("role") != "admin":
+            users_db[uname]["role"] = "admin"
+        return
+    if not pw:
+        if IS_PRODUCTION:
+            raise RuntimeError(
+                "Compte root admin requis en production: definir SILKGENESIS_ROOT_ADMIN_PASSWORD "
+                "ou SILKGENESIS_BOOTSTRAP_ADMIN_PASSWORD."
+            )
+        _dev_print("[WARNING] Compte root admin non cree (aucun mot de passe dans l'environnement).")
+        return
+    users_db[uname] = {
+        "username": uname,
+        "password": hash_password(pw),
+        "role": "admin",
+        "status": "active",
+        "balance": 0.0,
+        "xmr_address": generate_xmr_address(),
+        "avatar": None,
+        "pos": 0,
+        "rating": 5.0,
+    }
+    _dev_print(f"[INFO] Compte root admin '{uname}' cree (premier demarrage).")
+
+
 # ============================================================
 # STARTUP: Load toutes les data depuis SQLite
 # ============================================================
@@ -1445,6 +1497,9 @@ save_users_persist()
 for _legacy_admin in ("admin", "admin1"):
     if _legacy_admin in users_db:
         del users_db[_legacy_admin]
+
+# 6.2b Compte root admin (stable, configure via .env)
+_ensure_root_admin_account()
 
 # 6.3 Normalize legacy PGP setup flags to avoid false chat blocks.
 for _u in users_db.values():
@@ -1660,7 +1715,7 @@ def register(data: dict):
     if not check_rate_limit("register", username):
         retry = get_rate_limit_retry_after("register", username)
         return {"detail": "RATE_LIMITED", "retry_after": retry, "message": f"Too many registrations. Wait {retry}s."}, 429
-    if username in REGISTER_RESERVED_USERNAMES:
+    if _register_username_reserved(username):
         return {"detail": "IDENTITY_ALREADY_CLAIMED"}, 400
     if any(existing.lower() == username for existing in users_db):
         return {"detail": "IDENTITY_ALREADY_CLAIMED"}, 400
