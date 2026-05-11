@@ -36,7 +36,15 @@ from secure_storage import open_secure_connection
 BASE_DIR = Path(__file__).parent.absolute()
 MONERO_CLI_DIR = BASE_DIR.parent / "monero-cli"
 WALLETS_DIR = BASE_DIR / "multisig_wallets"
-DB_PATH = BASE_DIR / "multisig.db"
+
+# Stocker multisig.db dans le volume Docker persistant (SILKGENESIS_DATA_DIR)
+# En production : /app/data/multisig.db (volume silkgenesis_prod_data)
+# En dev : même répertoire que le code source (comportement inchangé)
+_DATA_DIR = os.environ.get("SILKGENESIS_DATA_DIR", "").strip()
+if _DATA_DIR:
+    DB_PATH = Path(_DATA_DIR) / "multisig.db"
+else:
+    DB_PATH = BASE_DIR / "multisig.db"
 
 # HMAC secret du journal d'audit multisig. JAMAIS de valeur par defaut connue:
 # en production on refuse de demarrer, en dev on genere une valeur ephemere
@@ -97,9 +105,65 @@ if not MS_WALLET_PASS:
     MS_WALLET_PASS = secrets.token_urlsafe(32)
 
 WALLETS_DIR.mkdir(exist_ok=True)
+# S'assurer que le répertoire de la DB existe (important si SILKGENESIS_DATA_DIR est défini)
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 _lock = threading.Lock()
-_rpc_processes = {}  # {wallet_name: subprocess.Popen}
+_rpc_processes = {}   # {wallet_name: subprocess.Popen}
+_port_registry = {}   # {order_id: {"buyer": port, "vendor": port}}
+_port_lock = threading.Lock()
+
+# ============================================================
+# GESTION DES PORTS SANS COLLISION
+# ============================================================
+
+def _allocate_port(order_id: str, role: str) -> int:
+    """
+    Alloue un port libre pour buyer ou vendor d'une commande.
+    Cherche un port libre dans la plage configuree en evitant
+    toute collision avec les ports deja utilises.
+    """
+    with _port_lock:
+        # Si deja alloue pour cette commande, reutiliser
+        if order_id in _port_registry and role in _port_registry[order_id]:
+            return _port_registry[order_id][role]
+
+        base = PORT_BUYER_BASE if role == "buyer" else PORT_VENDOR_BASE
+        used = set()
+        for reg in _port_registry.values():
+            used.update(reg.values())
+        # Aussi charger les ports depuis la DB (commandes actives apres redemarrage)
+        try:
+            conn = open_secure_connection(str(DB_PATH))
+            try:
+                rows = conn.execute(
+                    "SELECT buyer_rpc_port, vendor_rpc_port FROM multisig_wallets "
+                    "WHERE status NOT IN ('completed','refunded')"
+                ).fetchall()
+                for r in rows:
+                    if r[0]: used.add(r[0])
+                    if r[1]: used.add(r[1])
+            finally:
+                conn.close()
+        except Exception:
+            pass
+
+        port = base
+        while port in used or port == PORT_MARKETPLACE:
+            port += 1
+            if port > base + 500:
+                raise RuntimeError(f"No free port available for {role} (base={base})")
+
+        if order_id not in _port_registry:
+            _port_registry[order_id] = {}
+        _port_registry[order_id][role] = port
+        return port
+
+
+def _free_port(order_id: str):
+    """Libere les ports alloues pour une commande terminee."""
+    with _port_lock:
+        _port_registry.pop(order_id, None)
 
 # ============================================================
 # UTILITAIRES TEMPS
@@ -181,6 +245,14 @@ def _init_db():
 
 _init_db()
 
+# Recharger les wallets RPC actifs apres un redemarrage serveur.
+# Timer de 5s pour laisser le temps au module de finir de charger.
+def _schedule_restore():
+    import threading as _t
+    _t.Timer(5.0, _restore_active_wallets).start()
+
+_schedule_restore()
+
 # ============================================================
 # AUDIT LOG IMMUABLE
 # ============================================================
@@ -214,28 +286,40 @@ def _wallet_rpc_exe() -> str:
     raise FileNotFoundError(f"monero-wallet-rpc not found in {MONERO_CLI_DIR}")
 
 def _start_wallet_rpc(wallet_file: str, port: int, wallet_name: str) -> bool:
-    """Demarrer une instance wallet-rpc pour un wallet specifique"""
+    """
+    Demarrer une instance wallet-rpc pour un wallet existant.
+    Le mot de passe est ecrit dans un fichier temporaire.
+    """
+    import tempfile
     if wallet_name in _rpc_processes:
         proc = _rpc_processes[wallet_name]
         if proc.poll() is None:
             return True  # Deja en cours
 
+    tmp_pass_file = None
     try:
         exe = _wallet_rpc_exe()
         wallet_path = str(WALLETS_DIR / wallet_file)
-        
+
+        fd, tmp_pass_file = tempfile.mkstemp(prefix="sgms_", suffix=".tmp")
+        try:
+            os.write(fd, MS_WALLET_PASS.encode())
+        finally:
+            os.close(fd)
+
         cmd = [
             exe,
-            f'--wallet-file', wallet_path,
-            f'--rpc-bind-port', str(port),
-            f'--rpc-login', f'{RPC_USER}:{RPC_PASS}',
-            f'--daemon-address', DAEMON_HOST,
-            f'--log-level', '0',
-            f'--trusted-daemon',
+            '--wallet-file', wallet_path,
+            '--rpc-bind-port', str(port),
+            '--rpc-login', f'{RPC_USER}:{RPC_PASS}',
+            '--daemon-address', DAEMON_HOST,
+            '--password-file', tmp_pass_file,
+            '--log-level', '0',
+            '--trusted-daemon',
         ]
         if STAGENET_FLAG:
             cmd.append(STAGENET_FLAG)
-        
+
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
@@ -243,9 +327,8 @@ def _start_wallet_rpc(wallet_file: str, port: int, wallet_name: str) -> bool:
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
         )
         _rpc_processes[wallet_name] = proc
-        time.sleep(3)  # Attendre le startup
-        
-        # Verifier que le RPC repond
+        time.sleep(3)
+
         if _rpc_call(port, "get_version"):
             print(f"[RPC] Started {wallet_name} on port {port}")
             return True
@@ -258,30 +341,53 @@ def _start_wallet_rpc(wallet_file: str, port: int, wallet_name: str) -> bool:
     except Exception as e:
         print(f"[RPC] Error starting {wallet_name}: {e}")
         return False
+    finally:
+        if tmp_pass_file and os.path.exists(tmp_pass_file):
+            try:
+                os.unlink(tmp_pass_file)
+            except OSError:
+                pass
 
 def _create_wallet(wallet_name: str, port: int) -> bool:
-    """Creer un nouveau wallet vide pour un participant"""
+    """
+    Creer un nouveau wallet vide pour un participant.
+    Le mot de passe est ecrit dans un fichier temporaire pour ne jamais
+    apparaitre dans la ligne de commande (ps aux / Task Manager).
+    """
+    import tempfile
+    tmp_pass_file = None
     try:
         exe = _wallet_rpc_exe()
         wallet_path = str(WALLETS_DIR / wallet_name)
-        
+
+        # Ecrire le mot de passe dans un fichier temporaire securise
+        fd, tmp_pass_file = tempfile.mkstemp(prefix="sgms_", suffix=".tmp")
+        try:
+            os.write(fd, MS_WALLET_PASS.encode())
+        finally:
+            os.close(fd)
+
         cmd = [
             exe,
-            f'--generate-new-wallet', wallet_path,
-            f'--rpc-bind-port', str(port),
-            f'--rpc-login', f'{RPC_USER}:{RPC_PASS}',
-            f'--daemon-address', DAEMON_HOST,
-            f'--password', MS_WALLET_PASS,
-            f'--log-level', '0',
+            '--generate-new-wallet', wallet_path,
+            '--rpc-bind-port', str(port),
+            '--rpc-login', f'{RPC_USER}:{RPC_PASS}',
+            '--daemon-address', DAEMON_HOST,
+            '--password-file', tmp_pass_file,
+            '--log-level', '0',
         ]
         if STAGENET_FLAG:
             cmd.append(STAGENET_FLAG)
-        
-        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+        )
         _rpc_processes[wallet_name] = proc
         time.sleep(4)
-        
+
         if _rpc_call(port, "get_version"):
             print(f"[RPC] Created new wallet {wallet_name} on port {port}")
             return True
@@ -289,6 +395,13 @@ def _create_wallet(wallet_name: str, port: int) -> bool:
     except Exception as e:
         print(f"[RPC] Error creating wallet {wallet_name}: {e}")
         return False
+    finally:
+        # Supprimer le fichier de mot de passe des que le process est lance
+        if tmp_pass_file and os.path.exists(tmp_pass_file):
+            try:
+                os.unlink(tmp_pass_file)
+            except OSError:
+                pass
 
 def _stop_wallet_rpc(wallet_name: str):
     """Stoper une instance wallet-rpc"""
@@ -302,6 +415,12 @@ def _stop_wallet_rpc(wallet_name: str):
                 proc.kill()
         del _rpc_processes[wallet_name]
         print(f"[RPC] Stopped {wallet_name}")
+
+
+def _free_port(order_id: str):
+    """Libere les ports alloues pour une commande terminee."""
+    with _port_lock:
+        _port_registry.pop(order_id, None)
 
 # ============================================================
 # APPELS RPC
@@ -462,7 +581,100 @@ def _step3_exchange_keys(order_id: str, buyer_port: int, vendor_port: int,
     # Pas d'erreur si les addresss sont vides (etape optionnelle)
     return {"success": True, "skipped": True}
 
-def _step4_create_tx(order_id: str, buyer_port: int, vendor_address: str, amount_xmr: float) -> dict:
+def _step3b_sync_multisig_info(order_id: str, buyer_port: int, vendor_port: int) -> dict:
+    """
+    CYCLE OBLIGATOIRE avant chaque transfer() en multisig Monero.
+
+    Sans ce cycle, transfer() echoue avec "No outputs found" ou
+    "Not enough unlocked money" meme si le wallet est finance.
+
+    Protocole:
+      1. Chaque wallet exporte ses multisig_info
+      2. Chaque wallet importe les infos des 2 autres
+    """
+    print(f"[MULTISIG:{order_id}] Step 3b: export/import multisig_info (pre-tx sync)")
+
+    # Export depuis les 3 wallets
+    r_mp = _rpc_call(PORT_MARKETPLACE, "export_multisig_info")
+    r_b  = _rpc_call(buyer_port,       "export_multisig_info")
+    r_v  = _rpc_call(vendor_port,      "export_multisig_info")
+
+    info_mp = r_mp.get("result", {}).get("info", "")
+    info_b  = r_b.get("result",  {}).get("info", "")
+    info_v  = r_v.get("result",  {}).get("info", "")
+
+    if not all([info_mp, info_b, info_v]):
+        missing = [n for n, v in [("marketplace", info_mp), ("buyer", info_b), ("vendor", info_v)] if not v]
+        return {"success": False, "error": f"export_multisig_info failed for: {', '.join(missing)}"}
+
+    # Import croise : chaque wallet recoit les infos des 2 autres
+    r_imp_mp = _rpc_call(PORT_MARKETPLACE, "import_multisig_info", {"info": [info_b,  info_v]})
+    r_imp_b  = _rpc_call(buyer_port,       "import_multisig_info", {"info": [info_mp, info_v]})
+    r_imp_v  = _rpc_call(vendor_port,      "import_multisig_info", {"info": [info_mp, info_b]})
+
+    # import_multisig_info retourne {"height": N} en cas de succes
+    ok_mp = "result" in r_imp_mp and r_imp_mp["result"] is not None
+    ok_b  = "result" in r_imp_b  and r_imp_b["result"]  is not None
+    ok_v  = "result" in r_imp_v  and r_imp_v["result"]  is not None
+
+    if not all([ok_mp, ok_b, ok_v]):
+        failed = [n for n, ok in [("marketplace", ok_mp), ("buyer", ok_b), ("vendor", ok_v)] if not ok]
+        return {"success": False, "error": f"import_multisig_info failed for: {', '.join(failed)}"}
+
+    print(f"[MULTISIG:{order_id}] Step 3b OK - all wallets synced")
+    return {"success": True}
+
+
+def _restore_active_wallets():
+    """
+    Appele au demarrage du serveur.
+    Recharge les processus wallet-rpc pour toutes les commandes actives
+    dont les wallets existent sur disque mais dont le process est mort
+    (redemarrage serveur, crash, etc.).
+    """
+    try:
+        conn = open_secure_connection(str(DB_PATH))
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute(
+                "SELECT order_id, buyer_wallet_file, vendor_wallet_file, "
+                "buyer_rpc_port, vendor_rpc_port, rpc_mode "
+                "FROM multisig_wallets "
+                "WHERE status NOT IN ('completed','refunded') AND rpc_mode='live'"
+            ).fetchall()
+        finally:
+            conn.close()
+
+        for row in rows:
+            oid        = row["order_id"]
+            b_wallet   = row["buyer_wallet_file"]
+            v_wallet   = row["vendor_wallet_file"]
+            b_port     = row["buyer_rpc_port"]
+            v_port     = row["vendor_rpc_port"]
+
+            if not b_wallet or not b_port or not v_port:
+                continue
+
+            b_path = WALLETS_DIR / (b_wallet + ".keys")
+            v_path = WALLETS_DIR / (v_wallet + ".keys") if v_wallet else None
+
+            if b_path.exists():
+                name = f"buyer_{oid[:16]}"
+                if name not in _rpc_processes or _rpc_processes[name].poll() is not None:
+                    print(f"[MULTISIG] Restoring buyer RPC for order {oid[:16]}...")
+                    _start_wallet_rpc(b_wallet, b_port, name)
+
+            if v_path and v_path.exists():
+                name = f"vendor_{oid[:16]}"
+                if name not in _rpc_processes or _rpc_processes[name].poll() is not None:
+                    print(f"[MULTISIG] Restoring vendor RPC for order {oid[:16]}...")
+                    _start_wallet_rpc(v_wallet, v_port, name)
+
+    except Exception as e:
+        print(f"[MULTISIG] Warning: could not restore active wallets: {e}")
+
+
+
     """
     ETAPE 4: Le buyer cree la transaction non-signee via transfer()
     Returns le tx_data_hex a faire signer par le marketplace
@@ -547,9 +759,9 @@ def create_multisig_wallet(order_id: str, buyer: str, vendor: str, amount_xmr: f
         vendor_wallet = f"vendor_{order_id[:16]}"
         mp_wallet     = "marketplace"  # Wallet permanent
 
-        # Ports dynamiques pour eviter les conflits
-        buyer_port  = PORT_BUYER_BASE  + (hash(order_id) % 100)
-        vendor_port = PORT_VENDOR_BASE + (hash(order_id) % 100)
+        # Ports dynamiques sans collision — pool global tracké
+        buyer_port  = _allocate_port(order_id, "buyer")
+        vendor_port = _allocate_port(order_id, "vendor")
 
         rpc_mode = "simulated"
         multisig_address = None
@@ -749,23 +961,72 @@ def sign_multisig(order_id: str, signer: str, role: str, tx_data_hex: str = None
 
 
 def _release_funds(order_id: str) -> dict:
-    """Liberer les fonds quand 2/3 signatures collectees"""
-    wallet = _load_wallet(order_id)
-    amount = wallet["amount_xmr"]
-    vendor = wallet["vendor"]
-    tx_hash = None
+    """
+    Liberer les fonds quand 2/3 signatures collectees.
+
+    Flux live complet:
+      1. Recharger les wallets RPC si necessaire (apres redemarrage)
+      2. Cycle export/import_multisig_info (sync obligatoire pre-tx)
+      3. buyer.transfer(do_not_relay=True) -> tx_data_hex
+      4. marketplace.sign_multisig(tx_data_hex) -> signed_hex
+      5. marketplace.submit_multisig(signed_hex) -> tx_hash
+    """
+    wallet   = _load_wallet(order_id)
+    amount   = wallet["amount_xmr"]
+    vendor   = wallet["vendor"]
+    b_port   = wallet.get("buyer_rpc_port")
+    v_port   = wallet.get("vendor_rpc_port")
+    b_wallet = wallet.get("buyer_wallet_file")
+    v_wallet = wallet.get("vendor_wallet_file")
+    tx_hash  = None
     rpc_error = None
 
-    # Mode live: utiliser le vrai RPC
-    if wallet.get("rpc_mode") == "live" and wallet.get("partial_tx_hex"):
-        step5 = _step5_sign_and_submit(order_id, wallet["partial_tx_hex"])
-        if step5["success"]:
-            tx_hash = step5["tx_hash"]
+    if wallet.get("rpc_mode") == "live" and b_port and v_port:
+        b_name = f"buyer_{order_id[:16]}"
+        v_name = f"vendor_{order_id[:16]}"
+
+        b_alive = _rpc_ok(b_port)
+        v_alive = _rpc_ok(v_port)
+
+        if not b_alive and b_wallet:
+            b_alive = _start_wallet_rpc(b_wallet, b_port, b_name)
+        if not v_alive and v_wallet:
+            v_alive = _start_wallet_rpc(v_wallet, v_port, v_name)
+
+        if b_alive and v_alive and _rpc_ok(PORT_MARKETPLACE):
+            # Etape 3b: sync obligatoire avant transfer
+            sync = _step3b_sync_multisig_info(order_id, b_port, v_port)
+            if not sync["success"]:
+                rpc_error = f"pre-tx sync failed: {sync['error']}"
+            else:
+                # Etape 4: buyer cree la tx (sauf si deja fournie manuellement)
+                tx_hex = wallet.get("partial_tx_hex") or ""
+                if not tx_hex:
+                    r_addr = _rpc_call(v_port, "get_address", {"account_index": 0})
+                    vendor_xmr_addr = (r_addr.get("result") or {}).get("address", "")
+                    if not vendor_xmr_addr:
+                        rpc_error = "Cannot get vendor XMR address from wallet"
+                    else:
+                        step4 = _step4_create_tx(order_id, b_port, vendor_xmr_addr, amount)
+                        if step4["success"]:
+                            tx_hex = step4["tx_data_hex"]
+                        else:
+                            rpc_error = f"create_tx failed: {step4['error']}"
+
+                if tx_hex and not rpc_error:
+                    step5 = _step5_sign_and_submit(order_id, tx_hex)
+                    if step5["success"]:
+                        tx_hash = step5["tx_hash"]
+                    else:
+                        rpc_error = f"sign/submit failed: {step5['error']}"
         else:
-            rpc_error = step5.get("error", "Unknown RPC error")
-    elif wallet.get("rpc_mode") == "live" and not wallet.get("partial_tx_hex"):
-        # Mode live mais pas de tx_data_hex â†’ le buyer doit d'abord creer la tx
-        rpc_error = "Waiting for buyer to submit tx_data_hex via sign endpoint"
+            missing = []
+            if not b_alive: missing.append("buyer RPC")
+            if not v_alive: missing.append("vendor RPC")
+            if not _rpc_ok(PORT_MARKETPLACE): missing.append("marketplace RPC")
+            rpc_error = f"RPC unavailable: {', '.join(missing)}"
+    elif wallet.get("rpc_mode") == "live":
+        rpc_error = "Missing RPC port info for this order"
     else:
         rpc_error = "RPC offline - simulated mode"
 
@@ -791,9 +1052,9 @@ def _release_funds(order_id: str) -> dict:
         "rpc_error": rpc_error
     })
 
-    # Stoper les wallets ephemeres
     _stop_wallet_rpc(f"buyer_{order_id[:16]}")
     _stop_wallet_rpc(f"vendor_{order_id[:16]}")
+    _free_port(order_id)
 
     return {
         "success": True,
@@ -852,7 +1113,60 @@ def resolve_dispute(order_id: str, admin: str, winner: str) -> dict:
     if winner == wallet["vendor"]:
         release = _release_funds(order_id)
     else:
-        tx_hash = f"SIMULATED_REFUND_{secrets.token_hex(32)}"
+        # Remboursement reel vers le buyer via le meme flux multisig
+        # On reutilise _release_funds mais on redirige vers le buyer.
+        # Pour ca on met a jour temporairement le vendor dans la DB
+        # afin que _release_funds envoie vers le buyer.
+        # Approche propre: appel direct au flux RPC si live, sinon simule.
+        b_port  = wallet.get("buyer_rpc_port")
+        v_port  = wallet.get("vendor_rpc_port")
+        b_wallet_file = wallet.get("buyer_wallet_file")
+        v_wallet_file = wallet.get("vendor_wallet_file")
+        tx_hash = None
+        refund_error = None
+
+        if wallet.get("rpc_mode") == "live" and b_port and v_port:
+            b_name = f"buyer_{order_id[:16]}"
+            v_name = f"vendor_{order_id[:16]}"
+            b_alive = _rpc_ok(b_port)
+            v_alive = _rpc_ok(v_port)
+            if not b_alive and b_wallet_file:
+                b_alive = _start_wallet_rpc(b_wallet_file, b_port, b_name)
+            if not v_alive and v_wallet_file:
+                v_alive = _start_wallet_rpc(v_wallet_file, v_port, v_name)
+
+            if b_alive and v_alive and _rpc_ok(PORT_MARKETPLACE):
+                sync = _step3b_sync_multisig_info(order_id, b_port, v_port)
+                if sync["success"]:
+                    # Recuperer l'adresse du buyer depuis son wallet
+                    r_addr = _rpc_call(b_port, "get_address", {"account_index": 0})
+                    buyer_xmr_addr = (r_addr.get("result") or {}).get("address", "")
+                    if buyer_xmr_addr:
+                        # Le vendor cree la tx de remboursement vers le buyer
+                        step4 = _step4_create_tx(order_id, v_port, buyer_xmr_addr, wallet["amount_xmr"])
+                        if step4["success"]:
+                            step5 = _step5_sign_and_submit(order_id, step4["tx_data_hex"])
+                            if step5["success"]:
+                                tx_hash = step5["tx_hash"]
+                            else:
+                                refund_error = f"sign/submit failed: {step5.get('error')}"
+                        else:
+                            refund_error = f"create_tx failed: {step4.get('error')}"
+                    else:
+                        refund_error = "Cannot get buyer XMR address"
+                else:
+                    refund_error = f"pre-tx sync failed: {sync.get('error')}"
+            else:
+                refund_error = "RPC unavailable for refund"
+        else:
+            refund_error = "RPC offline - simulated refund"
+
+        if not tx_hash:
+            tx_hash = f"SIMULATED_REFUND_{secrets.token_hex(32)}"
+            print(f"[MULTISIG:{order_id}] SIMULATED refund to buyer")
+            if refund_error:
+                print(f"[MULTISIG:{order_id}] Reason: {refund_error}")
+
         conn = open_secure_connection(str(DB_PATH))
         try:
             conn.execute(
@@ -862,8 +1176,23 @@ def resolve_dispute(order_id: str, admin: str, winner: str) -> dict:
             conn.commit()
         finally:
             conn.close()
-        _audit(order_id, "BUYER_REFUNDED", admin, {"tx_hash": tx_hash})
-        release = {"success": True, "tx_hash": tx_hash, "refund": True}
+
+        _stop_wallet_rpc(f"buyer_{order_id[:16]}")
+        _stop_wallet_rpc(f"vendor_{order_id[:16]}")
+        _free_port(order_id)
+
+        _audit(order_id, "BUYER_REFUNDED", admin, {
+            "tx_hash": tx_hash,
+            "mode": "live" if not refund_error else "simulated",
+            "refund_error": refund_error
+        })
+        release = {
+            "success": True,
+            "tx_hash": tx_hash,
+            "refund": True,
+            "mode": "live" if not refund_error else "simulated",
+            "warning": refund_error
+        }
 
     return {"success": True, "winner": winner, "resolution": "vendor_paid" if winner == wallet["vendor"] else "buyer_refunded", "release": release}
 

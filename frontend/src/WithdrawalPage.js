@@ -320,9 +320,9 @@ export default function WithdrawalPage({ user }) {
                   {form.amount_xmr && (
                     <div style={{ fontSize: 12, color: '#6b7280', marginTop: 4 }}>
                       Tier:{' '}
-                      {parseFloat(form.amount_xmr) < 5
+                      {parseFloat(form.amount_xmr) <= 1.0
                         ? '🟢 Small (auto-processed)'
-                        : parseFloat(form.amount_xmr) < 50
+                        : parseFloat(form.amount_xmr) <= 10.0
                         ? '🟡 Medium (admin review)'
                         : '🔴 Large (dual approval required)'}
                     </div>
@@ -382,9 +382,9 @@ export default function WithdrawalPage({ user }) {
                 {/* Info box */}
                 <div style={{ ...s.alertBox, borderColor: '#374151', background: '#111827' }}>
                   <div style={{ color: '#9ca3af', fontSize: 12, lineHeight: 1.7 }}>
-                    <div>🟢 <strong style={{ color: '#22c55e' }}>Small</strong> (&lt;5 XMR) — Auto-processed within minutes</div>
-                    <div>🟡 <strong style={{ color: '#f59e0b' }}>Medium</strong> (5–50 XMR) — Admin review within 24h</div>
-                    <div>🔴 <strong style={{ color: '#ef4444' }}>Large</strong> (&gt;50 XMR) — Dual approval, 48–72h</div>
+                    <div>🟢 <strong style={{ color: '#22c55e' }}>Small</strong> (≤1 XMR) — Auto-processed within minutes</div>
+                    <div>🟡 <strong style={{ color: '#f59e0b' }}>Medium</strong> (1–10 XMR) — Admin review within 24h</div>
+                    <div>🔴 <strong style={{ color: '#ef4444' }}>Large</strong> (&gt;10 XMR) — Dual approval, 48–72h</div>
                     <div style={{ marginTop: 6, color: '#6b7280' }}>
                       Your balance is reserved immediately upon submission.
                       If rejected, it is refunded automatically.

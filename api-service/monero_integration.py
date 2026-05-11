@@ -224,11 +224,26 @@ class EscrowManager:
         self.users_db = users_db
         self._deposit_addresses = {}  # {address: order_id}
         self._wallet = MoneroWallet()
+        # Recharger le mapping depuis les orders existantes au demarrage
+        self._reload_deposit_addresses()
+
+    def _reload_deposit_addresses(self):
+        """
+        Reconstruit _deposit_addresses depuis orders_db au demarrage.
+        Evite la perte du mapping apres un redemarrage serveur.
+        """
+        for order_id, order in self.orders_db.items():
+            addr = order.get("deposit_address") or order.get("xmr_subaddress")
+            if addr and addr not in self._deposit_addresses:
+                self._deposit_addresses[addr] = order_id
+        if self._deposit_addresses:
+            print(f"[ESCROW] Reloaded {len(self._deposit_addresses)} deposit address mappings")
 
     def generate_deposit_address(self, order_id: str, user: str, amount_xmr: float) -> dict:
         """Generates a unique subaddress for an order deposit"""
         try:
-            result = self._wallet.create_subaddress(account_index=0, label=f"order_{order_id}")
+            # MoneroWallet exposes create_address() — not create_subaddress()
+            result = self._wallet.create_address(account_index=0, label=f"order_{order_id}")
             if result and result.get("address"):
                 addr = result["address"]
                 self._deposit_addresses[addr] = order_id

@@ -3,8 +3,38 @@
  * Tiered commission display + Withdraw Funds panel
  * Amber/dark cyberpunk aesthetic — no style changes
  */
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { silkApiUrl } from './silkApi';
+
+// ============================================================
+// ELAPSED TIME HOOK — live "active for X" counter
+// ============================================================
+function useElapsedTime(isoTimestamp) {
+  const [elapsed, setElapsed] = useState('');
+
+  useEffect(() => {
+    if (!isoTimestamp) { setElapsed(''); return; }
+
+    const format = () => {
+      const start = new Date(isoTimestamp).getTime();
+      const now = Date.now();
+      const totalSec = Math.max(0, Math.floor((now - start) / 1000));
+      const days = Math.floor(totalSec / 86400);
+      const hrs  = Math.floor((totalSec % 86400) / 3600);
+      const mins = Math.floor((totalSec % 3600) / 60);
+      const secs = totalSec % 60;
+      if (days > 0) return `${days}d ${String(hrs).padStart(2,'0')}h ${String(mins).padStart(2,'0')}m ${String(secs).padStart(2,'0')}s`;
+      if (hrs  > 0) return `${String(hrs).padStart(2,'0')}h ${String(mins).padStart(2,'0')}m ${String(secs).padStart(2,'0')}s`;
+      return `${String(mins).padStart(2,'0')}m ${String(secs).padStart(2,'0')}s`;
+    };
+
+    setElapsed(format());
+    const t = setInterval(() => setElapsed(format()), 1000);
+    return () => clearInterval(t);
+  }, [isoTimestamp]);
+
+  return elapsed;
+}
 
 // ============================================================
 // COMMISSION TIER BADGE
@@ -435,10 +465,43 @@ export default function VendorDashboard({ username, authenticatedFetch }) {
     );
   }
 
-  const { level, next_level, progress_to_next_pct, total_sales, total_volume_xmr, all_levels } = data;
+  const { level, next_level, progress_to_next_pct, total_sales, total_volume_xmr, all_levels, founder_commission_free, founder_commission_enabled_at } = data;
+
+  const founderElapsed = useElapsedTime(founder_commission_free ? founder_commission_enabled_at : null);
 
   return (
     <div style={{ fontFamily: 'monospace', color: '#e2e8f0' }} className="space-y-6">
+
+      {/* FOUNDER COMMISSION-FREE BANNER */}
+      {founder_commission_free && (
+        <div style={{
+          background: 'linear-gradient(135deg, rgba(251,191,36,0.12), rgba(245,158,11,0.06))',
+          border: '1px solid rgba(251,191,36,0.4)',
+          borderRadius: '14px',
+          padding: '14px 20px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '12px',
+        }}>
+          <span style={{ fontSize: '22px' }}>🏅</span>
+          <div style={{ flex: 1 }}>
+            <p style={{ color: '#fbbf24', margin: '0 0 2px', fontSize: '13px', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+              Founder Benefit Active — 0% Commission
+            </p>
+            <p style={{ color: '#92400e', margin: 0, fontSize: '11px' }}>
+              As a Founder Vendor, you currently pay no platform fee on sales. This benefit is managed by the marketplace admin.
+            </p>
+          </div>
+          {founderElapsed && (
+            <div style={{ textAlign: 'right', flexShrink: 0 }}>
+              <p style={{ color: '#6b7280', margin: '0 0 2px', fontSize: '9px', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Active for</p>
+              <p style={{ color: '#fbbf24', margin: 0, fontSize: '15px', fontWeight: '800', fontFamily: 'monospace', letterSpacing: '0.05em' }}>
+                {founderElapsed}
+              </p>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* HEADER CARD */}
       <div style={{
@@ -467,7 +530,11 @@ export default function VendorDashboard({ username, authenticatedFetch }) {
           {[
             { label: 'Total Sales', value: total_sales, color: '#f59e0b' },
             { label: 'Volume (XMR)', value: total_volume_xmr.toFixed(4), color: '#8b5cf6' },
-            { label: 'Commission Rate', value: `${level.commission_pct}%`, color: level.color }
+            {
+              label: 'Commission Rate',
+              value: founder_commission_free ? '0% 🏅' : `${level.commission_pct}%`,
+              color: founder_commission_free ? '#fbbf24' : level.color
+            }
           ].map(stat => (
             <div key={stat.label} style={{
               background: '#0f172a',

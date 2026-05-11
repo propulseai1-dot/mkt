@@ -40,12 +40,13 @@ from db_persist import (
     save_all_listings, load_all_listings, save_listing,
     save_all_categories, load_all_categories,
     save_order, load_all_orders,
-    save_all_order_messages, load_all_order_messages,
+    save_all_order_messages, load_all_order_messages, save_order_message,
     save_all_general_messages, load_all_general_messages,
     save_review, load_all_reviews, save_all_reviews,
     save_all_disputes, load_all_disputes,
     save_vendor_bond, load_all_vendor_bonds,
     start_auto_backup, backup_now, list_backups,
+    save_referral, load_all_referrals,
 )
 
 # Security
@@ -123,12 +124,53 @@ def _ops_warning(msg: str) -> None:
 
 MONERO_RPC_URL = os.environ.get("MONERO_RPC_URL", "http://127.0.0.1:18082/json_rpc")
 TEST_GODMODE_ENABLED = (
-    (os.environ.get("SILKGENESIS_ENABLE_TEST_GODMODE", "1").strip().lower() in ("1", "true", "yes", "on"))
+    (os.environ.get("SILKGENESIS_ENABLE_TEST_GODMODE", "0").strip().lower() in ("1", "true", "yes", "on"))
     and (not IS_PRODUCTION)
 )
 TEST_GODMODE_USERNAME = (os.environ.get("SILKGENESIS_TEST_GODMODE_USERNAME", "godmode") or "").strip().lower()
 TEST_GODMODE_PASSWORD = os.environ.get("SILKGENESIS_TEST_GODMODE_PASSWORD", "godmode123!")
 FOUNDER_VENDOR_BADGE_LIMIT = 20
+
+# ============================================================
+# FOUNDER COMMISSION-FREE MODE
+# Persisté sur disque — survit aux redémarrages
+# ============================================================
+_FOUNDER_COMMISSION_CONFIG_FILE = os.path.join(persist_base_dir(), "founder_commission_config.json")
+
+def _load_founder_commission_config() -> dict:
+    try:
+        if os.path.exists(_FOUNDER_COMMISSION_CONFIG_FILE):
+            from secure_storage import encrypted_json_load
+            data = encrypted_json_load(_FOUNDER_COMMISSION_CONFIG_FILE, default={}) or {}
+            return data
+    except Exception:
+        pass
+    return {}
+
+def _save_founder_commission_config(cfg: dict):
+    try:
+        from secure_storage import encrypted_json_save
+        encrypted_json_save(_FOUNDER_COMMISSION_CONFIG_FILE, cfg)
+    except Exception as e:
+        _dev_print(f"[WARNING] _save_founder_commission_config: {e}")
+
+_founder_commission_cfg: dict = _load_founder_commission_config()
+
+def is_founder_commission_free() -> bool:
+    """Returns True if the global founder commission-free mode is enabled."""
+    return bool(_founder_commission_cfg.get("enabled", False))
+
+def set_founder_commission_free(enabled: bool, admin_username: str = "admin"):
+    """Enable or disable the global founder commission-free mode."""
+    global _founder_commission_cfg
+    _founder_commission_cfg["enabled"] = bool(enabled)
+    _founder_commission_cfg["updated_by"] = admin_username
+    _founder_commission_cfg["updated_at"] = datetime.utcnow().isoformat()
+    # Track when it was enabled (not reset on disable — preserves history)
+    if enabled:
+        _founder_commission_cfg["enabled_at"] = datetime.utcnow().isoformat()
+    _save_founder_commission_config(_founder_commission_cfg)
+
 # Noms reserves a l'inscription (pas de squatting si le compte n'existe pas encore)
 REGISTER_RESERVED_USERNAMES = frozenset({
     "admin", "administrator", "root", "rootadmin", "system", "support", "moderator",
@@ -822,7 +864,7 @@ general_chat_db = {}  # {buyer_vendor: [messages]} - Chat general buyer-vendor
 seller_requests = []
 reviews_db = {}  # {vendor_username: [reviews]}
 disputes_db = {}  # {dispute_id: dispute_data}
-referrals_db = {}  # {referral_code: {owner, uses, earnings}}
+referrals_db = load_all_referrals()  # {referral_code: {owner, uses, earnings}} — persisté SQLite
 
 # ============================================================
 # VENDOR LEVELS SYSTEM
@@ -891,10 +933,19 @@ def _settle_order_funds_to_vendor(
     """
     Escrow settlement: marketplace fee by vendor tier; 55% of fee to affiliate tree + vendor referrer,
     45% of fee to platform liquidity. Net sale proceeds -> vendor balance.
+    Founder vendors pay 0% commission when founder_commission_free mode is enabled.
     """
     with funds_rlock:
         level = get_vendor_level(vendor)
         rate = float(level.get("commission", 0.08))
+
+        # Founder commission-free mode: 0% for vendors with founder badge
+        vendor_user = users_db.get(vendor, {})
+        is_founder = bool(vendor_user.get("founder_vendor_badge"))
+        founder_free = is_founder and is_founder_commission_free()
+        if founder_free:
+            rate = 0.0
+
         commission_xmr = round(float(amount_xmr) * rate, 8)
         net_xmr = round(float(amount_xmr) - commission_xmr, 8)
         if net_xmr < 0:
@@ -929,6 +980,7 @@ def _settle_order_funds_to_vendor(
             "net_xmr": net_xmr,
             "affiliate": aff,
             "platform_commission_kept_xmr": platform_slice,
+            "founder_commission_free": founder_free,
         }
 
 
@@ -978,7 +1030,7 @@ def auto_finalize_orders():
                                 continue
                             if order_id not in chat_db:
                                 chat_db[order_id] = []
-                            chat_db[order_id].append({
+                            sys_msg = {
                                 "id": len(chat_db[order_id]) + 1,
                                 "sender": "SYSTEM",
                                 "message": (
@@ -989,7 +1041,13 @@ def auto_finalize_orders():
                                 ),
                                 "timestamp": now.isoformat(),
                                 "is_system": True
-                            })
+                            }
+                            chat_db[order_id].append(sys_msg)
+                            # Persister le message système en SQLite
+                            try:
+                                save_order_message(order_id, sys_msg)
+                            except Exception:
+                                pass
                             _dev_print(
                                 f"[AUTO-FINALIZE] {order_id} -> vendor net {s.get('net_xmr')} XMR, "
                                 f"liquidity +{s.get('commission_xmr')} XMR"
@@ -1101,6 +1159,7 @@ def _credit_referral_on_purchase(buyer_username: str, order_total_xmr: float) ->
                         if r.get("username") == buyer_username:
                             r["credited"] = True
                             r["credited_at"] = datetime.utcnow().isoformat()
+                    save_referral(code, info)
                     break
         save_users_persist()
         log("REFERRAL_CREDITED", buyer_username, {"owner": owner, "volume_xmr": new_vol})
@@ -1123,10 +1182,16 @@ def generate_referral_code(username):
             "referrals": [],
             "created_at": datetime.utcnow().isoformat()
         }
+        save_referral(code, referrals_db[code])
     return code
 
 def generate_xmr_address():
-    return f"4{secrets.token_hex(47)}"
+    """
+    Ne génère PLUS de fausses adresses hexadécimales.
+    Retourne None pour signaler explicitement que le RPC est indisponible.
+    Les appelants doivent gérer None et ne jamais présenter cette valeur à l'utilisateur.
+    """
+    return None
 
 def generate_escrow_address():
     return f"ESCROW_{secrets.token_hex(32)}"
@@ -1169,13 +1234,9 @@ def get_or_create_order_subaddress(order_id: str):
     if IS_PRODUCTION:
         return None
 
-    return {
-        "address": generate_xmr_address(),
-        "address_index": None,
-        "rpc_online": False,
-        "reused": False,
-        "simulated": True,
-    }
+    # En dev avec RPC offline : retourner None plutôt qu'une fausse adresse
+    # pour éviter tout risque de perte de fonds.
+    return None
 
 # INITIALISER LES TOP VENDORS ET PRODUITS
 def init_demo_data():
@@ -1208,28 +1269,30 @@ def init_demo_data():
         _dev_print("[INFO] Admin bootstrap account created.")
     
     top_vendors = [
-        {"username": "DarkPharmacy",   "sales": 18, "rating": 4.8, "volume": 12.4},
-        {"username": "CryptoKing",     "sales": 14, "rating": 4.6, "volume": 8.7},
-        {"username": "SilkMaster",     "sales": 20, "rating": 4.9, "volume": 15.2},
-        {"username": "GreenLeaf",      "sales": 11, "rating": 4.7, "volume": 5.3},
-        {"username": "PsychedelicPro", "sales": 9,  "rating": 4.5, "volume": 4.1},
-        {"username": "PharmaDirect",   "sales": 16, "rating": 4.8, "volume": 9.8},
-        {"username": "DigitalGoods",   "sales": 13, "rating": 4.4, "volume": 3.6},
-        {"username": "SecureServices", "sales": 7,  "rating": 4.6, "volume": 6.2},
+        {"username": "DarkPharmacy"},
+        {"username": "CryptoKing"},
+        {"username": "SilkMaster"},
+        {"username": "GreenLeaf"},
+        {"username": "PsychedelicPro"},
+        {"username": "PharmaDirect"},
+        {"username": "DigitalGoods"},
+        {"username": "SecureServices"},
     ]
     
     for vendor in top_vendors:
         if vendor["username"] not in users_db:
             users_db[vendor["username"]] = {
                 "username": vendor["username"],
-                "password": "demo123",
+                "password": hash_password("demo123"),  # Haché immédiatement — jamais en clair
                 "role": "vendor",
                 "status": "active",
                 "balance": 0.0,
-                "xmr_address": generate_xmr_address(),
+                "xmr_address": None,  # Assignée via RPC au premier dépôt
                 "avatar": None,
-                "pos": vendor["sales"],
-                "rating": vendor["rating"]
+                "pos": 0,
+                "total_sales": 0,
+                "total_volume_xmr": 0.0,
+                "rating": 0.0,
             }
     
     # Create des produits pour chaque vendor avec images - TOUTES LES CATEGORIES
@@ -1971,6 +2034,7 @@ def register(data: dict):
                 "joined_at": datetime.utcnow().isoformat(),
                 "credited": False,
             })
+            save_referral(referral_code, referrals_db[referral_code])
     save_users_persist()  # Sauvegarder le nouvel user sur disque
     log(AuditEvent.REGISTER, username, {"role": "buyer"})
     return {
@@ -2017,13 +2081,13 @@ def login(data: dict):
 
         role = user.get("role", "buyer")
         is_test_godmode = _is_test_godmode_username(username)
-        if role in ("admin", "vendor") and not user.get("totp_enabled") and not is_test_godmode:
-            # Ne pas reveler le role exact: tout client legitime sait deja s'il est admin/vendor.
-            # Pas non plus de username canonique (anti-enumeration de casse / collision).
+        # 2FA is MANDATORY for admin accounts only. Vendors and buyers are strongly
+        # encouraged but not blocked from logging in without 2FA.
+        if role == "admin" and not user.get("totp_enabled") and not is_test_godmode:
             return JSONResponse(status_code=200, content={
                 "status": "2fa_setup_required",
                 "detail": "2FA_SETUP_REQUIRED",
-                "message": "Two-factor setup is required before login on this account.",
+                "message": "Two-factor authentication is required for admin accounts. Please set up 2FA before logging in.",
             })
 
         # ============================================================
@@ -2080,6 +2144,7 @@ def login(data: dict):
                 "xmr_address": user.get("xmr_address", ""),
                 "avatar": user.get("avatar"),
                 "pos": user.get("pos", 0),
+                "total_sales": user.get("total_sales", 0),
                 "totp_enabled": user.get("totp_enabled", False),
                 "pgp_fingerprint": user.get("pgp_fingerprint"),
                 "has_pgp": bool(user.get("pgp_public_key") or user.get("pgp_key")),
@@ -2173,15 +2238,23 @@ def get_vendor_listings(username: str):
 
 @app.get("/api/top-vendors")
 def get_top_vendors():
-    """Retourner les 8 top vendors"""
-    vendors = [u for u in users_db.values() if u["role"] == "vendor"]
-    # Trier par nombre de ventes
-    vendors_sorted = sorted(vendors, key=lambda x: x.get("pos", 0), reverse=True)[:8]
+    """Retourner les 8 top vendors — triés par ventes réelles, rating calculé depuis les vraies reviews."""
+    vendors = [u for u in users_db.values() if u.get("role") == "vendor"]
+    # Trier par total_sales réel (incrémenté à chaque settlement)
+    vendors_sorted = sorted(vendors, key=lambda x: x.get("total_sales", 0), reverse=True)[:8]
+
+    def _real_rating(username: str) -> float:
+        revs = reviews_db.get(username, [])
+        if not revs:
+            return 0.0
+        return round(sum(r.get("rating", 0) for r in revs) / len(revs), 1)
+
     return {"vendors": [
         {
             "username": v["username"],
-            "sales": v.get("pos", 0),
-            "rating": v.get("rating", 4.5),
+            "sales": v.get("total_sales", 0),
+            "rating": _real_rating(v["username"]),
+            "review_count": len(reviews_db.get(v["username"], [])),
             "avatar": v.get("avatar"),
             "founder_vendor_badge": bool(v.get("founder_vendor_badge")),
             "founder_vendor_serial": v.get("founder_vendor_serial")
@@ -2208,7 +2281,8 @@ def get_vendor_badge(username: str):
         "username": username,
         "founder_vendor_badge": badge,
         "founder_vendor_serial": serial,
-        "founder_vendor_badge_label": "Founder Vendor" if badge else None
+        "founder_vendor_badge_label": "Founder Vendor" if badge else None,
+        "avatar": user.get("avatar"),
     }
 
 @app.post("/api/admin/vendor/{username}/founder-badge")
@@ -2248,7 +2322,38 @@ def admin_set_founder_badge(username: str, data: dict, _admin: dict = Depends(re
         "limit": FOUNDER_VENDOR_BADGE_LIMIT,
     }
 
-@app.get("/api/top-products")
+
+# ============================================================
+# FOUNDER COMMISSION-FREE MODE — Admin endpoints
+# ============================================================
+
+@app.get("/api/admin/founder-commission-mode")
+def admin_get_founder_commission_mode(_admin: dict = Depends(require_admin)):
+    """Get the current founder commission-free mode status."""
+    return {
+        "enabled": is_founder_commission_free(),
+        "enabled_at": _founder_commission_cfg.get("enabled_at"),
+        "updated_by": _founder_commission_cfg.get("updated_by"),
+        "updated_at": _founder_commission_cfg.get("updated_at"),
+    }
+
+@app.post("/api/admin/founder-commission-mode")
+def admin_set_founder_commission_mode(data: dict, _admin: dict = Depends(require_admin)):
+    """Enable or disable the global founder commission-free mode."""
+    enabled = bool(data.get("enabled", False))
+    set_founder_commission_free(enabled, _admin.get("username", "admin"))
+    log_admin(
+        AuditEvent.ADMIN_ACTION,
+        _admin.get("username", "admin"),
+        {"action": "set_founder_commission_free", "enabled": enabled},
+    )
+    return {
+        "status": "success",
+        "enabled": is_founder_commission_free(),
+        "message": "Founder commission-free mode enabled." if enabled else "Founder commission-free mode disabled. Normal tier rates apply.",
+    }
+
+
 def get_top_products():
     """Retourner les produits les plus vendus"""
     items = [v for v in listings_db.values() if v["status"] == "active"]
@@ -2767,10 +2872,15 @@ def get_conversations(username: str, session: dict = Depends(get_current_session
         if buyer != username and vendor != username:
             continue
         last_msg = messages[-1] if messages else None
+        # Include avatars for both participants so the frontend can display them
+        buyer_user = users_db.get(buyer, {})
+        vendor_user = users_db.get(vendor, {})
         conversations.append({
             "chat_key": chat_key,
             "buyer": buyer,
             "vendor": vendor,
+            "buyer_avatar": buyer_user.get("avatar"),
+            "vendor_avatar": vendor_user.get("avatar"),
             "last_message": last_msg,
             "message_count": len(messages),
             "unread": 0
@@ -3953,8 +4063,8 @@ def _load_warrant_canary_date() -> None:
     global WARRANT_CANARY_LAST_UPDATED
     try:
         if os.path.isfile(WARRANT_CANARY_STATE_FILE):
-            with open(WARRANT_CANARY_STATE_FILE, encoding="utf-8") as f:
-                data = json.load(f)
+            from secure_storage import encrypted_json_load
+            data = encrypted_json_load(WARRANT_CANARY_STATE_FILE, default={}) or {}
             s = (data.get("last_updated") or "").strip()
             if s:
                 if s.endswith("Z"):
@@ -3969,8 +4079,13 @@ def _load_warrant_canary_date() -> None:
 
 def _save_warrant_canary_date(dt: datetime) -> None:
     try:
-        with open(WARRANT_CANARY_STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump({"last_updated": dt.isoformat()}, f, indent=2)
+        from secure_storage import encrypted_json_load, encrypted_json_save
+        # Préserver les champs existants (pgp_fingerprint, etc.)
+        existing = {}
+        if os.path.isfile(WARRANT_CANARY_STATE_FILE):
+            existing = encrypted_json_load(WARRANT_CANARY_STATE_FILE, default={}) or {}
+        existing["last_updated"] = dt.isoformat()
+        encrypted_json_save(WARRANT_CANARY_STATE_FILE, existing)
     except Exception:
         pass
 
@@ -3981,11 +4096,26 @@ _load_warrant_canary_date()
 def get_warrant_canary():
     """Warrant canary - updated monthly"""
     updated = WARRANT_CANARY_LAST_UPDATED
+    # Charger la config PGP persistée si disponible
+    pgp_fingerprint = None
+    pgp_signature_configured = False
+    try:
+        from secure_storage import encrypted_json_load
+        canary_state = encrypted_json_load(WARRANT_CANARY_STATE_FILE, default={}) or {}
+        pgp_fingerprint = canary_state.get("pgp_fingerprint") or None
+        pgp_signature_configured = bool(
+            pgp_fingerprint
+            and pgp_fingerprint != "PLACEHOLDER - Admin must set real PGP key"
+            and len(pgp_fingerprint) >= 16
+        )
+    except Exception:
+        pass
     return {
         "canary_text": WARRANT_CANARY_TEXT.format(date=updated.strftime("%Y-%m-%d")),
         "last_updated": updated.strftime("%Y-%m-%d"),
         "status": "ACTIVE",
-        "pgp_fingerprint": "PLACEHOLDER - Admin must set real PGP key"
+        "pgp_fingerprint": pgp_fingerprint if pgp_signature_configured else None,
+        "pgp_signature_configured": pgp_signature_configured,
     }
 
 
@@ -4111,6 +4241,32 @@ def get_all_levels():
     return {"levels": VENDOR_LEVELS}
 
 
+@app.get("/api/platform/status")
+def get_platform_status():
+    """
+    Public endpoint — no auth required.
+    Retourne l'etat operationnel de la plateforme pour les banners frontend.
+    Utilise PlatformControlManager si disponible, sinon retourne un etat nominal.
+    """
+    try:
+        from withdrawal_queue import PlatformControlManager
+        return PlatformControlManager.get_platform_status()
+    except Exception:
+        # Fallback si le module n'est pas encore initialise
+        return {
+            "emergency_freeze": {"active": False, "user_message": ""},
+            "liquidity_protection_mode": {"active": False, "user_message": ""},
+            "structured_withdrawal_policy": {
+                "active": False,
+                "user_message": "",
+                "threshold_xmr": 60.0,
+            },
+            "freeze_all_withdrawals": False,
+            "liquidity_mode": False,
+            "registration_paused": False,
+        }
+
+
 @app.get("/api/affiliate/program")
 def affiliate_program_endpoint():
     """Public: vendor tier examples + affiliate split rules for the Affiliation page."""
@@ -4216,6 +4372,7 @@ def apply_referral(data: dict, session: dict = Depends(get_current_session)):
             "username": username,
             "joined_at": datetime.utcnow().isoformat()
         })
+        save_referral(code, referrals_db[code])
         new_bal = users_db[username]["balance"]
         save_users_persist()
     return {
@@ -4765,13 +4922,34 @@ async def dms_configure_endpoint(request: Request, _admin: dict = Depends(requir
 # ============================================================
 @app.post("/api/admin/emergency-shutdown")
 async def emergency_shutdown(request: Request, _admin: dict = Depends(require_admin)):
-    """Emergency shutdown - stops the server immediately"""
+    """Emergency shutdown - requires TOTP step-up before stopping the server"""
     data = await request.json()
     username = data.get("username", "")
+    totp_code = (data.get("totp_code") or "").strip()
+
     if username not in users_db or users_db[username].get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin only")
-    _dev_print(f"[EMERGENCY] Shutdown initiated by {username}")
-    log_admin(AuditEvent.ADMIN_ACCESS, username, {"action": "emergency_shutdown"})
+
+    # TOTP step-up obligatoire — un token admin volé ne suffit pas
+    admin_user = users_db.get(username, {})
+    totp_secret = admin_user.get("totp_secret")
+    if not totp_secret or not admin_user.get("totp_enabled"):
+        raise HTTPException(
+            status_code=403,
+            detail="TOTP_REQUIRED_FOR_SHUTDOWN: Admin account must have TOTP enabled to use emergency shutdown"
+        )
+    if not totp_code:
+        raise HTTPException(status_code=403, detail="TOTP_CODE_REQUIRED")
+    if not verify_totp(totp_secret, totp_code):
+        log_security(
+            AuditEvent.ADMIN_ACCESS_DENIED,
+            username,
+            {"action": "emergency_shutdown", "reason": "invalid_totp"},
+        )
+        raise HTTPException(status_code=403, detail="INVALID_TOTP_CODE")
+
+    _dev_print(f"[EMERGENCY] Shutdown initiated by {username} (TOTP verified)")
+    log_admin(AuditEvent.ADMIN_ACCESS, username, {"action": "emergency_shutdown", "totp_verified": True})
     # Schedule shutdown after response is sent
     import threading
     def _shutdown():
@@ -5472,6 +5650,11 @@ def vendor_dashboard(username: str, session: dict = Depends(get_current_session)
     level = get_vendor_level(username)
     commission_rate = level["commission"]
 
+    # Check founder commission-free mode
+    is_founder = bool(vendor.get("founder_vendor_badge"))
+    founder_free_active = is_founder and is_founder_commission_free()
+    effective_commission_rate = 0.0 if founder_free_active else commission_rate
+
     # Find next level
     current_idx = next((i for i, l in enumerate(VENDOR_LEVELS) if l["name"] == level["name"]), 0)
     next_level_data = None
@@ -5491,12 +5674,14 @@ def vendor_dashboard(username: str, session: dict = Depends(get_current_session)
         "total_sales": total_sales,
         "total_volume_xmr": round(total_volume, 6),
         "balance": round(balance, 8),
+        "founder_commission_free": founder_free_active,
+        "founder_commission_enabled_at": _founder_commission_cfg.get("enabled_at") if founder_free_active else None,
         "level": {
             "name": level["name"],
             "icon": level["icon"],
             "color": level["color"],
-            "commission_rate": commission_rate,
-            "commission_pct": round(commission_rate * 100, 1)
+            "commission_rate": effective_commission_rate,
+            "commission_pct": round(effective_commission_rate * 100, 1)
         },
         "next_level": {
             "name": next_level_data["name"],

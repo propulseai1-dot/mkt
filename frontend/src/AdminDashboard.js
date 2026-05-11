@@ -10,8 +10,34 @@ import LiquidityDashboard from './LiquidityDashboard';
 import { silkApiUrl } from './silkApi';
 
 // ============================================================
-// ADMIN DASHBOARD - Real-time monitoring & control panel
+// ELAPSED TIME HOOK — live "active for X" counter
 // ============================================================
+function useElapsedTime(isoTimestamp) {
+  const [elapsed, setElapsed] = useState('');
+
+  useEffect(() => {
+    if (!isoTimestamp) { setElapsed(''); return; }
+
+    const format = () => {
+      const start = new Date(isoTimestamp).getTime();
+      const now = Date.now();
+      const totalSec = Math.max(0, Math.floor((now - start) / 1000));
+      const days = Math.floor(totalSec / 86400);
+      const hrs  = Math.floor((totalSec % 86400) / 3600);
+      const mins = Math.floor((totalSec % 3600) / 60);
+      const secs = totalSec % 60;
+      if (days > 0) return `${days}d ${String(hrs).padStart(2,'0')}h ${String(mins).padStart(2,'0')}m ${String(secs).padStart(2,'0')}s`;
+      if (hrs  > 0) return `${String(hrs).padStart(2,'0')}h ${String(mins).padStart(2,'0')}m ${String(secs).padStart(2,'0')}s`;
+      return `${String(mins).padStart(2,'0')}m ${String(secs).padStart(2,'0')}s`;
+    };
+
+    setElapsed(format());
+    const t = setInterval(() => setElapsed(format()), 1000);
+    return () => clearInterval(t);
+  }, [isoTimestamp]);
+
+  return elapsed;
+}
 
 function StatCard({ icon: Icon, label, value, sub, color = '#9b59b6', trend }) {
   return (
@@ -78,6 +104,11 @@ export default function AdminDashboard({ user, sessionToken: sessionTokenProp })
   const [cryptoPriceMeta, setCryptoPriceMeta] = useState(null);
   const [cryptoPricesSaving, setCryptoPricesSaving] = useState(false);
   const [dmsToggleSaving, setDmsToggleSaving] = useState(false);
+  const [founderCommissionMode, setFounderCommissionMode] = useState(null); // null = not loaded
+  const [founderCommissionSaving, setFounderCommissionSaving] = useState(false);
+  const founderElapsed = useElapsedTime(
+    founderCommissionMode?.enabled ? founderCommissionMode?.enabled_at : null
+  );
   const listingImageInputRef = useRef(null);
   const [listingImageTargetId, setListingImageTargetId] = useState(null);
   const sessionToken = sessionTokenProp || (() => {
@@ -154,7 +185,7 @@ export default function AdminDashboard({ user, sessionToken: sessionTokenProp })
   const loadAll = useCallback(async () => {
     setLoading(true);
     try {
-      const [healthR, usersR, disputesR, reqsR, listingsR, canaryR, dmsR] = await Promise.all([
+      const [healthR, usersR, disputesR, reqsR, listingsR, canaryR, dmsR, founderCommR] = await Promise.all([
         fetch(silkApiUrl('/api/health')).then(r => r.json()).catch(() => ({})),
         adminFetch('/admin/users').then(r => r.json()).catch(() => []),
         adminFetch('/admin/disputes').then(r => r.json()).catch(() => []),
@@ -162,6 +193,7 @@ export default function AdminDashboard({ user, sessionToken: sessionTokenProp })
         fetch(silkApiUrl('/api/listings')).then(r => r.json()).catch(() => ({ items: [] })),
         fetch(silkApiUrl('/api/canary')).then(r => r.json()).catch(() => null),
         adminFetch(`/admin/dms/status?username=${encodeURIComponent(user?.username || '')}`).then(r => r.json()).catch(() => null),
+        adminFetch('/admin/founder-commission-mode').then(r => r.json()).catch(() => null),
       ]);
       setStats(healthR);
       setUsers(Array.isArray(usersR) ? usersR : []);
@@ -172,6 +204,9 @@ export default function AdminDashboard({ user, sessionToken: sessionTokenProp })
       setDmsStatus(dmsR && typeof dmsR === 'object' ? dmsR : null);
       if (dmsR && typeof dmsR.hours_remaining === 'number') {
         setDmsRemainingSec(Math.max(0, Math.floor(dmsR.hours_remaining * 3600)));
+      }
+      if (founderCommR && typeof founderCommR === 'object') {
+        setFounderCommissionMode(founderCommR);
       }
     } catch (e) {}
     setLoading(false);
@@ -726,11 +761,115 @@ export default function AdminDashboard({ user, sessionToken: sessionTokenProp })
 
             <div style={{ marginTop: 24 }}>
               <div style={s.sectionTitle}><Users size={14} /> Active Vendors</div>
+
+              {/* FOUNDER COMMISSION-FREE TOGGLE */}
+              <div style={{
+                background: '#0d0d1a',
+                border: `1px solid ${founderCommissionMode?.enabled ? '#fbbf2444' : '#1a1a2e'}`,
+                borderRadius: 10,
+                padding: 16,
+                marginBottom: 16,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 16,
+              }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: founderCommissionMode?.enabled ? '#fbbf24' : '#ccc', marginBottom: 4 }}>
+                    🏅 Founder Vendor — Commission-Free Mode
+                  </div>
+                  <div style={{ fontSize: 11, color: '#555', lineHeight: 1.5 }}>
+                    {founderCommissionMode?.enabled
+                      ? 'Active — all Founder Vendors currently pay 0% commission on sales.'
+                      : 'Inactive — Founder Vendors pay normal tier-based commission rates.'}
+                    {founderCommissionMode?.updated_by && (
+                      <span style={{ color: '#374151', marginLeft: 8 }}>
+                        Last changed by {founderCommissionMode.updated_by}
+                        {founderCommissionMode.updated_at ? ` on ${new Date(founderCommissionMode.updated_at).toLocaleString()}` : ''}
+                      </span>
+                    )}
+                  </div>
+                  {/* LIVE TIMER */}
+                  {founderCommissionMode?.enabled && founderElapsed && (
+                    <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <Clock size={11} style={{ color: '#fbbf24' }} />
+                      <span style={{ fontSize: 10, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Active for</span>
+                      <span style={{ fontSize: 13, color: '#fbbf24', fontWeight: 800, fontFamily: 'monospace', letterSpacing: '0.05em' }}>
+                        {founderElapsed}
+                      </span>
+                    </div>
+                  )}
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+                  <button
+                    type="button"
+                    disabled={founderCommissionSaving || founderCommissionMode?.enabled}
+                    onClick={async () => {
+                      if (!window.confirm('Enable 0% commission for all Founder Vendors?')) return;
+                      setFounderCommissionSaving(true);
+                      try {
+                        const r = await adminFetch('/admin/founder-commission-mode', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ enabled: true }),
+                        });
+                        const d = await r.json();
+                        if (!r.ok) { showMsg(d.detail || 'Failed', 'error'); return; }
+                        showMsg('Founder commission-free mode enabled');
+                        setFounderCommissionMode(prev => ({ ...prev, enabled: true, enabled_at: new Date().toISOString() }));
+                      } catch { showMsg('Network error', 'error'); }
+                      finally { setFounderCommissionSaving(false); }
+                    }}
+                    style={{
+                      padding: '8px 14px',
+                      background: founderCommissionMode?.enabled ? '#222' : 'rgba(251,191,36,0.15)',
+                      color: founderCommissionMode?.enabled ? '#555' : '#fbbf24',
+                      border: `1px solid ${founderCommissionMode?.enabled ? '#333' : '#fbbf2444'}`,
+                      borderRadius: 6, cursor: founderCommissionSaving || founderCommissionMode?.enabled ? 'default' : 'pointer',
+                      fontSize: 11, fontWeight: 700,
+                    }}
+                  >
+                    {founderCommissionSaving ? '…' : 'Enable 0%'}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={founderCommissionSaving || !founderCommissionMode?.enabled}
+                    onClick={async () => {
+                      if (!window.confirm('Disable founder commission-free mode? Founder Vendors will pay normal tier rates.')) return;
+                      setFounderCommissionSaving(true);
+                      try {
+                        const r = await adminFetch('/admin/founder-commission-mode', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ enabled: false }),
+                        });
+                        const d = await r.json();
+                        if (!r.ok) { showMsg(d.detail || 'Failed', 'error'); return; }
+                        showMsg('Founder commission-free mode disabled. Normal rates apply.');
+                        setFounderCommissionMode(prev => ({ ...prev, enabled: false }));
+                      } catch { showMsg('Network error', 'error'); }
+                      finally { setFounderCommissionSaving(false); }
+                    }}
+                    style={{
+                      padding: '8px 14px',
+                      background: !founderCommissionMode?.enabled ? '#222' : 'rgba(231,76,60,0.12)',
+                      color: !founderCommissionMode?.enabled ? '#555' : '#e74c3c',
+                      border: `1px solid ${!founderCommissionMode?.enabled ? '#333' : '#e74c3c44'}`,
+                      borderRadius: 6, cursor: founderCommissionSaving || !founderCommissionMode?.enabled ? 'default' : 'pointer',
+                      fontSize: 11, fontWeight: 700,
+                    }}
+                  >
+                    Disable
+                  </button>
+                </div>
+              </div>
+
               <div style={{ background: '#0d0d1a', border: '1px solid #1a1a2e', borderRadius: 10, overflow: 'hidden' }}>
                 <table style={s.table}>
                   <thead>
                     <tr>
                       <th style={s.th}>Username</th>
+                      <th style={s.th}>Founder</th>
                       <th style={s.th}>Balance</th>
                       <th style={s.th}>Status</th>
                     </tr>
@@ -739,6 +878,11 @@ export default function AdminDashboard({ user, sessionToken: sessionTokenProp })
                     {users.filter(u => u.role === 'vendor').map(u => (
                       <tr key={u.username}>
                         <td style={s.td}>{u.username}</td>
+                        <td style={s.td}>
+                          {u.founder_vendor_badge
+                            ? <span style={{ color: '#fbbf24', fontSize: 11, fontWeight: 700 }}>🏅 #{u.founder_vendor_serial}</span>
+                            : <span style={{ color: '#374151', fontSize: 11 }}>—</span>}
+                        </td>
                         <td style={s.td}><span style={{ color: '#27ae60' }}>{u.balance?.toFixed(6)} XMR</span></td>
                         <td style={s.td}><Badge status={u.status} /></td>
                       </tr>

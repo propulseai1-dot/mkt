@@ -906,7 +906,7 @@ function ReleaseFundsButton({ order, currentUser, onReleased }) {
               You are about to release <strong style={{ color: '#f97316' }}>{order?.amount_xmr?.toFixed(6)} XMR</strong> from escrow to the vendor.
             </p>
             <p style={{ color: '#9ca3af', margin: '0 0 20px', fontSize: '13px', lineHeight: '1.6' }}>
-              A marketplace fee of <strong>2.5%</strong> will be deducted automatically. 
+              A marketplace fee will be deducted automatically based on the vendor's tier.
               <br/>
               <strong style={{ color: '#ef4444' }}>This action cannot be undone.</strong>
             </p>
@@ -923,12 +923,20 @@ function ReleaseFundsButton({ order, currentUser, onReleased }) {
                 <span style={{ color: '#e2e8f0', fontWeight: '700' }}>{order?.amount_xmr?.toFixed(6)} XMR</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-                <span style={{ color: '#9ca3af' }}>Marketplace fee (2.5%):</span>
-                <span style={{ color: '#ef4444' }}>-{(order?.amount_xmr * 0.025)?.toFixed(6)} XMR</span>
+                <span style={{ color: '#9ca3af' }}>Marketplace fee:</span>
+                <span style={{ color: '#ef4444' }}>
+                  {order?.settlement?.commission_xmr != null
+                    ? `-${parseFloat(order.settlement.commission_xmr).toFixed(6)} XMR (${order.settlement.commission_pct?.toFixed(1)}%)`
+                    : 'calculated at release'}
+                </span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid #374151', paddingTop: '4px', marginTop: '4px' }}>
                 <span style={{ color: '#9ca3af' }}>Vendor receives:</span>
-                <span style={{ color: '#22c55e', fontWeight: '700' }}>{(order?.amount_xmr * 0.975)?.toFixed(6)} XMR</span>
+                <span style={{ color: '#22c55e', fontWeight: '700' }}>
+                  {order?.settlement?.net_xmr != null
+                    ? `${parseFloat(order.settlement.net_xmr).toFixed(6)} XMR`
+                    : `~${(order?.amount_xmr * 0.92)?.toFixed(6)} XMR`}
+                </span>
               </div>
             </div>
             
@@ -1998,8 +2006,8 @@ function VendorProfilePage({ vendorName, products, onBack, onViewProduct, curren
   const [totalReviews, setTotalReviews] = useState(0);
   const [vendorBadge, setVendorBadge] = useState(null);
   const [badgeSaving, setBadgeSaving] = useState(false);
+  const [vendorTotalSales, setVendorTotalSales] = useState(null); // real sales from backend
   const vendorProducts = products.filter(p => p.vendor === vendorName);
-  const totalSales = vendorProducts.reduce((sum, p) => sum + (p.sales || 0), 0);
 
   useEffect(() => {
     const loadReviews = async () => {
@@ -2013,7 +2021,18 @@ function VendorProfilePage({ vendorName, products, onBack, onViewProduct, curren
         }
       } catch (e) { console.error("Error loading reviews:", e); }
     };
+    // Load real total_sales from vendor level endpoint (public, no auth needed)
+    const loadVendorStats = async () => {
+      try {
+        const res = await fetch(`/api/vendor/${encodeURIComponent(vendorName)}/level`);
+        if (res.ok) {
+          const data = await res.json();
+          setVendorTotalSales(data.total_sales ?? null);
+        }
+      } catch { /* non-critical */ }
+    };
     loadReviews();
+    loadVendorStats();
   }, [vendorName]);
 
   const isAdmin = currentUser?.role === 'admin';
@@ -2069,8 +2088,10 @@ function VendorProfilePage({ vendorName, products, onBack, onViewProduct, curren
       </button>
       <div className="bg-gradient-to-r from-amber-900/20 to-transparent border border-amber-900/20 rounded-3xl p-8 mb-8">
         <div className="flex items-center gap-6">
-          <div className="w-24 h-24 bg-gradient-to-br from-amber-900/40 to-purple-900/40 rounded-2xl flex items-center justify-center text-4xl font-black text-amber-500 border-2 border-amber-600/30">
-            {vendorName[0]}
+          <div className="w-24 h-24 bg-gradient-to-br from-amber-900/40 to-purple-900/40 rounded-2xl flex items-center justify-center text-4xl font-black text-amber-500 border-2 border-amber-600/30 overflow-hidden">
+            {vendorBadge?.avatar
+              ? <img src={vendorBadge.avatar} alt={vendorName} className="w-full h-full object-cover" loading="lazy" />
+              : vendorName[0]}
           </div>
           <div className="flex-1">
             <h1 className="text-4xl font-black text-white mb-2 flex items-center gap-3">
@@ -2081,11 +2102,21 @@ function VendorProfilePage({ vendorName, products, onBack, onViewProduct, curren
             </h1>
             <div className="flex items-center gap-6 text-sm">
               <div className="flex items-center gap-2">
-                <Star size={16} className="fill-amber-500 text-amber-500"/>
-                <span className="text-amber-500 font-black">{avgRating}</span>
-                <span className="text-gray-600">({reviews.length} reviews)</span>
+                {totalReviews > 0 ? (
+                  <>
+                    <Star size={16} className="fill-amber-500 text-amber-500"/>
+                    <span className="text-amber-500 font-black">{avgRating}</span>
+                    <span className="text-gray-600">({totalReviews} review{totalReviews !== 1 ? 's' : ''})</span>
+                  </>
+                ) : (
+                  <span className="text-gray-600 text-xs">No reviews yet</span>
+                )}
               </div>
-              <div className="text-gray-500"><span className="text-white font-black">{totalSales}</span> total sales</div>
+              <div className="text-gray-500">
+                <span className="text-white font-black">
+                  {vendorTotalSales !== null ? vendorTotalSales : '—'}
+                </span> total sales
+              </div>
               <div className="text-gray-500"><span className="text-white font-black">{vendorProducts.length}</span> active listings</div>
             </div>
             {isAdmin && (
@@ -2868,6 +2899,11 @@ function OrdersPage({ user, orders, products, onMarkShipped, onComplete, onOpenC
 function ProfilePage({ user, onUpdateAvatar, onUpgrade, onDelete }) {
   const [tempImg, setTempImg] = useState(user?.avatar || null);
 
+  // Sync tempImg when user.avatar changes externally (e.g. after page reload)
+  useEffect(() => {
+    setTempImg(user?.avatar || null);
+  }, [user?.avatar]);
+
   const handleAvatarChange = (e) => {
     const file = e.target.files[0];
     if (file) {
@@ -3136,7 +3172,7 @@ function AntiPhishingLogin({ onLogin }) {
         return;
       }
       if (resp.ok && data.status === '2fa_setup_required') {
-        setError('2FA setup is mandatory for this account role. Complete 2FA setup first.');
+        setError('2FA setup is required for admin accounts. Please set up 2FA before logging in.');
         setLoading(false);
         return;
       }
@@ -3534,7 +3570,7 @@ function SessionSecurityCenter({ currentUser }) {
 // ============================================================
 // Identity: 2FA (TOTP) — visible in Profile tab, above PGP
 // ============================================================
-function TwoFactorIdentityPanel({ username, sessionToken, onEnabled, onDisabled }) {
+function TwoFactorIdentityPanel({ username, sessionToken, onEnabled, onDisabled, userRole }) {
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
@@ -3549,7 +3585,9 @@ function TwoFactorIdentityPanel({ username, sessionToken, onEnabled, onDisabled 
     }
     setLoading(true);
     try {
-      const r = await fetch(`/api/2fa/status/${encodeURIComponent(username)}`);
+      const r = await fetch(`/api/2fa/status/${encodeURIComponent(username)}`, {
+        headers: sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {},
+      });
       const d = await r.json();
       if (r.ok) setStatus(d);
       else setStatus({ enabled: false, backup_codes_remaining: 0 });
@@ -3638,8 +3676,22 @@ function TwoFactorIdentityPanel({ username, sessionToken, onEnabled, onDisabled 
           {disableErr && <p className="text-red-400 text-xs normal-case not-italic">{disableErr}</p>}
         </div>
       ) : (
-        <div className="mt-4">
-          <p className="text-amber-600/80 text-xs not-italic mb-3">2FA is not enabled for this account.</p>
+        <div className="mt-4 space-y-3">
+          {userRole === 'admin' ? (
+            <div className="flex items-start gap-2 bg-red-950/40 border border-red-700/50 rounded-xl px-4 py-3">
+              <span className="text-red-400 text-base mt-0.5">⚠</span>
+              <p className="text-red-300 text-[11px] normal-case not-italic font-semibold leading-relaxed">
+                2FA is <strong>required</strong> for admin accounts. You will not be able to log in without it after your current session expires.
+              </p>
+            </div>
+          ) : (
+            <div className="flex items-start gap-2 bg-amber-950/30 border border-amber-700/40 rounded-xl px-4 py-3">
+              <span className="text-amber-400 text-base mt-0.5">⚠</span>
+              <p className="text-amber-300/90 text-[11px] normal-case not-italic font-medium leading-relaxed">
+                2FA is <strong>strongly recommended</strong>. Enabling it significantly improves your account security.
+              </p>
+            </div>
+          )}
           <button
             type="button"
             onClick={() => setShowModal(true)}
@@ -4084,9 +4136,16 @@ function MessagesInbox({ user, onOpenChat }) {
                 className="bg-[#111] border border-white/5 p-5 rounded-2xl hover:border-amber-900/40 transition-all cursor-pointer group flex items-center gap-4"
               >
                 {/* Avatar */}
-                <div className="w-12 h-12 bg-gradient-to-br from-amber-900/30 to-purple-900/30 rounded-xl flex items-center justify-center text-xl font-black text-amber-500 border border-amber-900/20 flex-shrink-0">
-                  {otherUser[0].toUpperCase()}
-                </div>
+                {(() => {
+                  const otherAvatar = conv.buyer === user.username ? conv.vendor_avatar : conv.buyer_avatar;
+                  return (
+                    <div className="w-12 h-12 bg-gradient-to-br from-amber-900/30 to-purple-900/30 rounded-xl flex items-center justify-center text-xl font-black text-amber-500 border border-amber-900/20 flex-shrink-0 overflow-hidden">
+                      {otherAvatar
+                        ? <img src={otherAvatar} alt={otherUser} className="w-full h-full object-cover" loading="lazy" />
+                        : otherUser[0].toUpperCase()}
+                    </div>
+                  );
+                })()}
                 {/* Content */}
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center justify-between mb-1">
@@ -4320,7 +4379,8 @@ function ReferralCard({ username }) {
 // ============================================================
 function MyListingsPage({ user, products, onDeleteListing, onNewListing, xmrRate = 352 }) {
   const myProducts = products.filter(p => p.vendor === user.username);
-  const totalSales = myProducts.reduce((sum, p) => sum + (p.sales || 0), 0);
+  // Use real total_sales from user object (incremented on each settlement), not listing-level sales
+  const totalSales = user.total_sales ?? myProducts.reduce((sum, p) => sum + (p.sales || 0), 0);
   const totalRevenue = myProducts.reduce((sum, p) => sum + (parseFloat(p.price_xmr) * (p.sales || 0)), 0);
 
   return (
@@ -5005,7 +5065,7 @@ function App() {
         return '2fa_required';
       }
       if (res.ok && data.status === '2fa_setup_required') {
-        alert('2FA setup is mandatory for this role. Complete setup now.');
+        alert('2FA setup is required for admin accounts. Please set up 2FA before logging in.');
         return '2fa_setup_required';
       }
       if (res.status === 401 && data.detail === 'INVALID_2FA_CODE') {
@@ -5700,8 +5760,10 @@ function App() {
                       <div key={vendor.username}
                         onClick={() => { setSelectedVendor(vendor.username); setActiveTab('vendor-profile'); }}
                         className="bg-black/60 border border-white/5 p-4 rounded-xl hover:border-amber-900/40 transition-all group cursor-pointer">
-                        <div className="w-16 h-16 bg-gradient-to-br from-amber-900/20 to-purple-900/20 rounded-full mx-auto mb-3 flex items-center justify-center text-2xl font-black text-amber-500">
-                          {vendor.username[0]}
+                        <div className="w-16 h-16 bg-gradient-to-br from-amber-900/20 to-purple-900/20 rounded-full mx-auto mb-3 flex items-center justify-center text-2xl font-black text-amber-500 overflow-hidden">
+                          {vendor.avatar
+                            ? <img src={vendor.avatar} alt={vendor.username} className="w-full h-full object-cover" loading="lazy" />
+                            : vendor.username[0]}
                         </div>
                         <h3 className="text-center text-white text-sm truncate group-hover:text-amber-500">{vendor.username}</h3>
                         {vendor.founder_vendor_badge && (
@@ -5710,7 +5772,11 @@ function App() {
                           </div>
                         )}
                         <div className="flex items-center justify-center gap-1 mt-2 text-[10px] text-amber-600">
-                          <Star size={12} className="fill-amber-600"/> {vendor.rating}
+                          {vendor.review_count > 0 ? (
+                            <><Star size={12} className="fill-amber-600"/> {vendor.rating} <span className="text-gray-600">({vendor.review_count})</span></>
+                          ) : (
+                            <span className="text-gray-600">No reviews</span>
+                          )}
                         </div>
                         <p className="text-center text-[9px] text-gray-600 mt-1">{vendor.sales} sales</p>
                       </div>
@@ -5822,11 +5888,18 @@ function App() {
           <div key={`spot-${vendor.username}`}
             onClick={() => { setSelectedVendor(vendor.username); setActiveTab('vendor-profile'); }}
             className="bg-[#0a0a0a] border border-white/5 p-5 rounded-xl hover:border-purple-500/40 transition-all cursor-pointer">
-            <div className="w-14 h-14 rounded-full bg-gradient-to-br from-amber-900/20 to-purple-900/30 flex items-center justify-center text-amber-500 text-2xl font-black mb-3">
-              {vendor.username[0]}
+            <div className="w-14 h-14 rounded-full bg-gradient-to-br from-amber-900/20 to-purple-900/30 flex items-center justify-center text-amber-500 text-2xl font-black mb-3 overflow-hidden">
+              {vendor.avatar
+                ? <img src={vendor.avatar} alt={vendor.username} className="w-full h-full object-cover" loading="lazy" />
+                : vendor.username[0]}
             </div>
             <h4 className="text-white text-sm truncate">{vendor.username}</h4>
-            <div className="text-[10px] text-gray-500 mt-1">{vendor.sales || 0} sales • rating {vendor.rating || 0}</div>
+            <div className="text-[10px] text-gray-500 mt-1">
+              {vendor.sales || 0} sales
+              {vendor.review_count > 0
+                ? <> • <Star size={10} className="inline fill-amber-600 text-amber-600 mb-0.5"/> {vendor.rating}</>
+                : <> • no reviews</>}
+            </div>
             <button className="mt-4 w-full bg-purple-900/20 border border-purple-700/40 text-purple-300 py-2 rounded-lg text-[10px] font-black uppercase">View Store</button>
           </div>
         ))}
@@ -5955,6 +6028,7 @@ function App() {
               <TwoFactorIdentityPanel
                 username={user?.username}
                 sessionToken={sessionToken}
+                userRole={user?.role}
                 onEnabled={() => setUser(prev => (prev ? { ...prev, totp_enabled: true } : prev))}
                 onDisabled={() => setUser(prev => (prev ? { ...prev, totp_enabled: false } : prev))}
               />

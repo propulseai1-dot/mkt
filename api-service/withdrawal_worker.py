@@ -28,12 +28,18 @@ import os
 from db_persist import get_db_path
 from funds_lock import funds_rlock
 from price_oracle_client import get_xmr_usd
+from secure_storage import open_secure_connection
 
 _lock = threading.Lock()
 
 
 def _db_path() -> str:
     return get_db_path()
+
+
+def _connect():
+    """Always open the withdrawal SQLite via the encrypted-at-rest layer."""
+    return open_secure_connection(_db_path(), check_same_thread=False)
 
 # ============================================================
 # CONFIGURATION DU WORKER
@@ -122,7 +128,7 @@ class PriorityScorer:
         pending. Stores the score dans la colonne `notes` (JSON).
         """
         with _lock:
-            conn = sqlite3.connect(_db_path(), check_same_thread=False)
+            conn = _connect()
             conn.row_factory = sqlite3.Row
             c = conn.cursor()
             c.execute("""
@@ -179,7 +185,7 @@ class AutoExpiryEngine:
         expired_count = 0
 
         with _lock:
-            conn = sqlite3.connect(_db_path(), check_same_thread=False)
+            conn = _connect()
             conn.row_factory = sqlite3.Row
             c = conn.cursor()
 
@@ -252,7 +258,7 @@ class TrancheAlertEngine:
         """
         now = datetime.utcnow().isoformat()
         with _lock:
-            conn = sqlite3.connect(_db_path(), check_same_thread=False)
+            conn = _connect()
             conn.row_factory = sqlite3.Row
             c = conn.cursor()
             c.execute("""
@@ -396,7 +402,7 @@ class CooldownChecker:
         """
         cutoff = (datetime.utcnow() - timedelta(days=7)).strftime('%Y-%m-%d')
         with _lock:
-            conn = sqlite3.connect(_db_path(), check_same_thread=False)
+            conn = _connect()
             c = conn.cursor()
             c.execute("""
                 DELETE FROM withdrawal_daily_limits
@@ -424,7 +430,7 @@ class CooldownChecker:
             cooldown_seconds = int(rule.get('cooldown_seconds', 300))
 
             with _lock:
-                conn = sqlite3.connect(_db_path(), check_same_thread=False)
+                conn = _connect()
                 conn.row_factory = sqlite3.Row
                 c = conn.cursor()
                 c.execute("""
@@ -572,7 +578,7 @@ def start_withdrawal_worker(users_db: dict, orders_db: dict) -> WithdrawalWorker
     # Ajouter la colonne priority_score si elle n'existe pas
     try:
         with _lock:
-            conn = sqlite3.connect(_db_path(), check_same_thread=False)
+            conn = _connect()
             c = conn.cursor()
             c.execute("ALTER TABLE withdrawal_queue ADD COLUMN priority_score INTEGER DEFAULT 0")
             conn.commit()

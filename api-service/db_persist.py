@@ -848,3 +848,66 @@ def save_all_general_messages(general_chat_db: dict):
 # Initialiser la DB au demarrage
 init_db()
 
+
+# ============================================================
+# REFERRALS
+# ============================================================
+
+def _ensure_referrals_table():
+    """Creer la table referrals si elle n'existe pas (migration safe)."""
+    with _lock:
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS referrals (
+                code        TEXT PRIMARY KEY,
+                data        TEXT NOT NULL,
+                owner       TEXT NOT NULL,
+                uses        INTEGER DEFAULT 0,
+                updated_at  TEXT
+            )
+        """)
+        conn.commit()
+        conn.close()
+
+_ensure_referrals_table()
+
+
+def save_referral(code: str, ref_data: dict):
+    """Save ou mettre a jour un code de parrainage."""
+    with _lock:
+        conn = get_conn()
+        c = conn.cursor()
+        now = datetime.utcnow().isoformat()
+        c.execute("""
+            INSERT OR REPLACE INTO referrals (code, data, owner, uses, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, (
+            code,
+            json.dumps(ref_data, default=str),
+            ref_data.get("owner", ""),
+            int(ref_data.get("uses", 0)),
+            now,
+        ))
+        conn.commit()
+        conn.close()
+
+
+def load_all_referrals() -> dict:
+    """Load tous les codes de parrainage depuis SQLite."""
+    with _lock:
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("SELECT code, data FROM referrals")
+        rows = c.fetchall()
+        conn.close()
+    result = {}
+    for row in rows:
+        try:
+            result[row["code"]] = json.loads(row["data"])
+        except Exception:
+            pass
+    if result:
+        print(f"[DB] Loaded {len(result)} referral codes from SQLite")
+    return result
+

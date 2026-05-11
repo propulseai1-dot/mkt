@@ -137,16 +137,7 @@ def verify_password(password: str, stored_hash: str) -> bool:
             key = hashlib.pbkdf2_hmac('sha256', peppered.encode('utf-8'), salt, iterations)
             return hmac.compare_digest(key, stored_key)
         except Exception:
-            # Try without pepper (legacy)
-            try:
-                parts = stored_hash.split('$')
-                iterations = int(parts[2])
-                salt = bytes.fromhex(parts[3])
-                stored_key = bytes.fromhex(parts[4])
-                key = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, iterations)
-                return hmac.compare_digest(key, stored_key)
-            except Exception:
-                return False
+            return False
     
     # Legacy PBKDF2 without prefix marker
     try:
@@ -443,8 +434,8 @@ def _load_dms_persisted_state() -> None:
     global _dms_last_checkin, _dms_interval_hours, _dms_enabled, _dms_action
     try:
         if os.path.isfile(DMS_SECURITY_STATE_FILE):
-            with open(DMS_SECURITY_STATE_FILE, encoding="utf-8") as f:
-                data = json.load(f)
+            from secure_storage import encrypted_json_load
+            data = encrypted_json_load(DMS_SECURITY_STATE_FILE, default={}) or {}
             _dms_enabled = bool(data.get("enabled", False))
             _dms_interval_hours = max(1, int(data.get("interval_hours", 72)))
             act = str(data.get("action", "shutdown"))
@@ -459,17 +450,16 @@ def _load_dms_persisted_state() -> None:
 
 def _save_dms_persisted_state() -> None:
     try:
-        with open(DMS_SECURITY_STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "enabled": _dms_enabled,
-                    "interval_hours": _dms_interval_hours,
-                    "action": _dms_action,
-                    "last_checkin_ts": _dms_last_checkin,
-                },
-                f,
-                indent=2,
-            )
+        from secure_storage import encrypted_json_save
+        encrypted_json_save(
+            DMS_SECURITY_STATE_FILE,
+            {
+                "enabled": _dms_enabled,
+                "interval_hours": _dms_interval_hours,
+                "action": _dms_action,
+                "last_checkin_ts": _dms_last_checkin,
+            },
+        )
     except Exception:
         pass
 

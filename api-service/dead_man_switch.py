@@ -34,8 +34,9 @@ def _load_state():
     global _dms_state
     if os.path.exists(DMS_STATE_FILE):
         try:
-            with open(DMS_STATE_FILE, encoding='utf-8') as f:
-                _dms_state.update(json.load(f))
+            from secure_storage import encrypted_json_load
+            data = encrypted_json_load(DMS_STATE_FILE, default={}) or {}
+            _dms_state.update(data)
             print(f"[DMS] Loaded. Enabled={_dms_state['enabled']}, Last={_dms_state.get('last_admin_login','never')}")
         except Exception as e:
             print(f"[DMS] Load error: {e}")
@@ -43,8 +44,8 @@ def _load_state():
 
 def _save_state():
     try:
-        with open(DMS_STATE_FILE, 'w', encoding='utf-8') as f:
-            json.dump(_dms_state, f, indent=2, default=str)
+        from secure_storage import encrypted_json_save
+        encrypted_json_save(DMS_STATE_FILE, _dms_state)
     except Exception as e:
         print(f"[DMS] Save error: {e}")
 

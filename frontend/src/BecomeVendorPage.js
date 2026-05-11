@@ -122,9 +122,11 @@ export default function BecomeVendorPage({ xmrRate, balance, onUpgrade }) {
           <p className="rounded-xl border border-red-900/40 bg-red-950/20 p-4 text-sm text-red-400">{loadErr}</p>
         )}
 
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-6">
           {levels.map((lvl) => {
-            const pct = ((lvl.commission_rate ?? 0) * 100).toFixed(1);
+            // API returns `commission` as a decimal (e.g. 0.08), or `commission_rate` depending on source
+            const rawRate = lvl.commission ?? lvl.commission_rate ?? 0;
+            const pct = (rawRate * 100).toFixed(1);
             const color = lvl.color || '#9b59b6';
             return (
               <div
@@ -139,13 +141,13 @@ export default function BecomeVendorPage({ xmrRate, balance, onUpgrade }) {
                   {lvl.icon}
                 </div>
                 <div className="text-[10px] font-black uppercase tracking-widest" style={{ color }}>
-                  {lvl.badge || `Level ${lvl.level}`}
+                  {lvl.badge || lvl.name}
                 </div>
                 <h3 className="mt-1 text-sm font-black text-white">{lvl.name}</h3>
                 <div className="mt-3 text-2xl font-black tabular-nums" style={{ color }}>
                   {pct}%
                 </div>
-                <p className="text-[9px] font-bold uppercase tracking-wide text-gray-500">fee</p>
+                <p className="text-[9px] font-bold uppercase tracking-wide text-gray-500">platform fee</p>
                 <p className="mt-3 text-[10px] font-medium normal-case not-italic text-gray-500">
                   {formatSalesRange(lvl)}
                 </p>
@@ -165,6 +167,12 @@ export default function BecomeVendorPage({ xmrRate, balance, onUpgrade }) {
             Your request is reviewed by staff. The <strong className="text-white">$400 USD</strong> equivalent is
             debited in XMR from your wallet when you submit (using the market spot rate).
           </p>
+          <div className="flex items-start gap-2 rounded-xl border border-amber-700/30 bg-amber-950/30 px-4 py-3 mt-3">
+            <span className="text-amber-400 text-base mt-0.5 flex-shrink-0">🔒</span>
+            <p className="text-[11px] font-medium normal-case not-italic leading-relaxed text-amber-200/80">
+              This is a <strong className="text-amber-400">refundable bond</strong>, not a fee. If you decide to leave the marketplace, your $400 bond is fully returned to your wallet — no questions asked.
+            </p>
+          </div>
         </div>
         <div className="relative z-10 mt-6 flex flex-shrink-0 flex-col items-stretch gap-3 md:mt-0 md:items-end">
           <div className="text-right text-[10px] font-mono text-gray-500">

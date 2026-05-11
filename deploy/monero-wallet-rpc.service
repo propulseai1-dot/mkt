@@ -1,0 +1,36 @@
+[Unit]
+Description=Monero Wallet RPC - SilkGenesis Marketplace
+After=network.target monerod.service
+Requires=monerod.service
+
+[Service]
+Type=simple
+User=monero
+Group=monero
+WorkingDirectory=/opt/silkgenesis/wallet
+
+ExecStart=/usr/local/bin/monero-wallet-rpc \
+  --wallet-file /opt/silkgenesis/wallet/marketplace \
+  --password-file /opt/silkgenesis/wallet/.wallet_password \
+  --rpc-bind-port 18082 \
+  --rpc-bind-ip 127.0.0.1 \
+  --rpc-login-file /opt/silkgenesis/wallet/.rpc_login \
+  --daemon-address 127.0.0.1:18081 \
+  --log-file /var/log/monero/wallet-rpc.log \
+  --log-level 1 \
+  --disable-rpc-login false \
+  --trusted-daemon
+
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Sécurité
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/silkgenesis/wallet /var/log/monero
+
+[Install]
+WantedBy=multi-user.target

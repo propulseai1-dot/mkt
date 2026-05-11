@@ -538,7 +538,7 @@ function ReleaseFundsButton({ order, currentUser, onReleased }) {
               You are about to release <strong style={{ color: '#f97316' }}>{order?.amount_xmr?.toFixed(6)} XMR</strong> from escrow to the vendor.
             </p>
             <p style={{ color: '#9ca3af', margin: '0 0 20px', fontSize: '13px', lineHeight: '1.6' }}>
-              A marketplace fee of <strong>2.5%</strong> will be deducted automatically. 
+              A marketplace fee will be deducted automatically based on the vendor's tier.
               <br/>
               <strong style={{ color: '#ef4444' }}>This action cannot be undone.</strong>
             </p>
@@ -555,12 +555,20 @@ function ReleaseFundsButton({ order, currentUser, onReleased }) {
                 <span style={{ color: '#e2e8f0', fontWeight: '700' }}>{order?.amount_xmr?.toFixed(6)} XMR</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-                <span style={{ color: '#9ca3af' }}>Marketplace fee (2.5%):</span>
-                <span style={{ color: '#ef4444' }}>-{(order?.amount_xmr * 0.025)?.toFixed(6)} XMR</span>
+                <span style={{ color: '#9ca3af' }}>Marketplace fee:</span>
+                <span style={{ color: '#ef4444' }}>
+                  {order?.settlement?.commission_xmr != null
+                    ? `-${parseFloat(order.settlement.commission_xmr).toFixed(6)} XMR (${order.settlement.commission_pct?.toFixed(1)}%)`
+                    : 'calculated at release'}
+                </span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid #374151', paddingTop: '4px', marginTop: '4px' }}>
                 <span style={{ color: '#9ca3af' }}>Vendor receives:</span>
-                <span style={{ color: '#22c55e', fontWeight: '700' }}>{(order?.amount_xmr * 0.975)?.toFixed(6)} XMR</span>
+                <span style={{ color: '#22c55e', fontWeight: '700' }}>
+                  {order?.settlement?.net_xmr != null
+                    ? `${parseFloat(order.settlement.net_xmr).toFixed(6)} XMR`
+                    : `~${(order?.amount_xmr * 0.92)?.toFixed(6)} XMR`}
+                </span>
               </div>
             </div>
             

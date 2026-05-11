@@ -82,20 +82,22 @@ def _load_config():
     global _bond_config
     if os.path.exists(BOND_STATE_FILE):
         try:
-            with open(BOND_STATE_FILE, encoding='utf-8') as f:
-                _bond_config = json.load(f)
-            print(f"[BOND] Config loaded: {len(_bond_config)} categories")
-            return
+            from secure_storage import encrypted_json_load
+            data = encrypted_json_load(BOND_STATE_FILE, default=None)
+            if data is not None:
+                _bond_config = data
+                print(f"[BOND] Config loaded: {len(_bond_config)} categories")
+                return
         except Exception as e:
             print(f"[BOND] Config load error: {e}")
-    # Premiere fois: utiliser les defaults
+    # Première fois: utiliser les defaults
     _bond_config = dict(DEFAULT_BOND_CONFIG)
     _save_config()
 
 def _save_config():
     try:
-        with open(BOND_STATE_FILE, 'w', encoding='utf-8') as f:
-            json.dump(_bond_config, f, indent=2)
+        from secure_storage import encrypted_json_save
+        encrypted_json_save(BOND_STATE_FILE, _bond_config)
     except Exception as e:
         print(f"[BOND] Config save error: {e}")
 
@@ -103,15 +105,18 @@ def _load_history():
     global _bond_history
     if os.path.exists(BOND_HISTORY_FILE):
         try:
-            with open(BOND_HISTORY_FILE, encoding='utf-8') as f:
-                _bond_history = json.load(f)
+            from secure_storage import encrypted_json_load
+            data = encrypted_json_load(BOND_HISTORY_FILE, default=None)
+            if data is not None:
+                _bond_history = data
+                return
         except Exception as e:
             print(f"[BOND] History load error: {e}")
 
 def _save_history():
     try:
-        with open(BOND_HISTORY_FILE, 'w', encoding='utf-8') as f:
-            json.dump(_bond_history, f, indent=2, default=str)
+        from secure_storage import encrypted_json_save
+        encrypted_json_save(BOND_HISTORY_FILE, _bond_history)
     except Exception as e:
         print(f"[BOND] History save error: {e}")
 
@@ -281,10 +286,16 @@ def request_refund(bond_data: dict, vendor: str) -> dict:
     })
     return {"success": True, "message": "Refund requested. Admin will review within 24h."}
 
-def admin_approve_refund(bond_data: dict, vendor: str, admin: str) -> dict:
-    """Admin approuve le remboursement"""
+def admin_approve_refund(bond_data: dict, vendor: str, admin: str, users_db: dict = None) -> dict:
+    """
+    Admin approuve le remboursement du bond.
+    Credite le solde du vendor ET met a jour le statut.
+    users_db est optionnel pour la compatibilite avec les anciens appels.
+    """
     if bond_data.get("status") != "refund_pending":
         return {"success": False, "error": f"Bond status is '{bond_data.get('status')}', not 'refund_pending'"}
+
+    amount_xmr = bond_data.get("amount_xmr", 0)
 
     bond_data["status"] = "refunded"
     bond_data["refunded_at"] = datetime.utcnow().isoformat()
@@ -295,15 +306,33 @@ def admin_approve_refund(bond_data: dict, vendor: str, admin: str) -> dict:
         "type": "refunded",
         "timestamp": datetime.utcnow().isoformat(),
         "approved_by": admin,
-        "amount_xmr": bond_data.get("amount_xmr"),
+        "amount_xmr": amount_xmr,
         "note": f"Refund approved by admin {admin}"
     })
     _add_history_event(vendor, "refunded", {
-        "amount_xmr": bond_data.get("amount_xmr"),
+        "amount_xmr": amount_xmr,
         "category": bond_data.get("category"),
         "approved_by": admin
     })
-    return {"success": True, "amount_xmr": bond_data.get("amount_xmr")}
+
+    # Crediter le solde du vendor si users_db est fourni
+    if users_db is not None and vendor in users_db and amount_xmr > 0:
+        try:
+            from funds_lock import funds_rlock
+            with funds_rlock:
+                users_db[vendor]["balance"] = round(
+                    float(users_db[vendor].get("balance", 0.0)) + float(amount_xmr), 8
+                )
+            try:
+                from db_persist import save_user
+                save_user(vendor, users_db[vendor])
+            except Exception:
+                pass
+            print(f"[BOND] Credited {amount_xmr} XMR to {vendor} balance (bond refund)")
+        except Exception as e:
+            print(f"[BOND] Warning: could not credit balance for {vendor}: {e}")
+
+    return {"success": True, "amount_xmr": amount_xmr}
 
 def admin_reject_refund(bond_data: dict, vendor: str, admin: str, reason: str = "") -> dict:
     """Admin rejette la demande de remboursement"""
